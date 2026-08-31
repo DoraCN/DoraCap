@@ -1,13 +1,17 @@
 //! rustbag 命令行（最小闭环）：record / play / info / selftest。
 //! `selftest` 验证：record(Imu+PointCloud) -> 单文件 .rbag -> play -> decode -> round-trip。
 
+use std::io::Write;
 use std::process::ExitCode;
+use std::process::{Command, Stdio};
 
 use rustbag_core::{
-    PlayOptions, Player, Recorder, Schema, SingleFileReader, SingleFileWriter, StorageReader,
-    Timestamp,
+    OwnedMessage, PlayOptions, Player, Recorder, Schema, SingleFileReader, SingleFileWriter,
+    StorageReader, Timestamp,
 };
 use rustbag_msgs::{Codec, Header, Imu, PointCloud, PointField, Time};
+
+mod json;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -18,14 +22,129 @@ fn main() -> ExitCode {
             eprintln!("record: 待实现（当前仅 selftest 闭环）");
             ExitCode::FAILURE
         }
-        Some("play") => {
-            eprintln!("play: 待实现（当前仅 selftest 闭环）");
-            ExitCode::FAILURE
-        }
+        Some("play") => play(&args),
         _ => {
             eprintln!("usage: rustbag (selftest|info <file>|record|play)");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn play(args: &[String]) -> ExitCode {
+    let mut file: Option<String> = None;
+    let mut rate: f64 = 0.0;
+    let mut loop_ = false;
+    let mut as_json = false;
+    let mut show: Option<String> = None;
+
+    let mut i = 2;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--rate" {
+            rate = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--rate=") {
+            rate = v.parse().unwrap_or(0.0);
+            i += 1;
+            continue;
+        }
+        if a == "--show"
+            && let Some(v) = args.get(i + 1)
+        {
+            show = Some(v.clone());
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--show=") {
+            show = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        match a.as_str() {
+            "--loop" => loop_ = true,
+            "--json" => as_json = true,
+            "--paced" => rate = 1.0,
+            _ if !a.starts_with("--") => file = Some(a.clone()),
+            _ => {
+                eprintln!("play: unknown arg {a}");
+                return ExitCode::FAILURE;
+            }
+        }
+        i += 1;
+    }
+
+    let Some(file) = file else {
+        eprintln!("usage: rustbag play <file> [--rate R] [--loop] [--json] [--show CMD]");
+        return ExitCode::FAILURE;
+    };
+
+    let reader = match SingleFileReader::open(&file) {
+        Ok(r) => r,
+        Err(e) => return fail(&e.to_string()),
+    };
+    let mut opts = PlayOptions::default().rate(rate);
+    if loop_ {
+        opts = opts.looped(true);
+    }
+    let mut player = match Player::open(Box::new(reader), opts) {
+        Ok(p) => p,
+        Err(e) => return fail(&e.to_string()),
+    };
+
+    let mut viz = spawn_viz(&show);
+    while let Some(m) = player.next_message() {
+        let line = if as_json {
+            json::message_to_json(&m)
+        } else {
+            summary(&m)
+        };
+        if let Some(ref mut child) = viz {
+            let stdin = child.stdin.as_mut();
+            if let Some(stdin) = stdin {
+                if writeln!(stdin, "{line}").is_err() {
+                    return ExitCode::FAILURE;
+                }
+                let _ = stdin.flush();
+            }
+        } else {
+            println!("{line}");
+        }
+    }
+    if let Some(mut child) = viz {
+        let _ = child.stdin.take();
+        if let Err(e) = child.wait() {
+            return fail(&format!("viz exited: {e}"));
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn summary(m: &OwnedMessage) -> String {
+    format!(
+        "{} stamp={:.6} type={} payload={}B",
+        m.channel,
+        m.stamp.to_secs_f64(),
+        m.schema.type_name,
+        m.payload.len()
+    )
+}
+
+fn spawn_viz(cmd: &Option<String>) -> Option<std::process::Child> {
+    let cmd = cmd.as_ref()?;
+    #[cfg(unix)]
+    {
+        Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdin(Stdio::piped())
+            .spawn()
+            .ok()
+    }
+    #[cfg(not(unix))]
+    {
+        Command::new(cmd).stdin(Stdio::piped()).spawn().ok()
     }
 }
 

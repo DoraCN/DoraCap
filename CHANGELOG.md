@@ -11,6 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - P0 最小闭环：`rustbag-core` 核心类型、存储 trait、单文件 `.rbag` 后端，`Recorder`/`Player`。
 - `rustbag-msgs`：`Header`/`Time`/`PointCloud`/`Imu` + `rbag1` 编解码（含 golden/round-trip 测试）。
-- `rustbag` CLI：`selftest` / `info`。
+- `rustbag` CLI：`selftest` / `info` / `play`。
+- `play` 支持 `--rate`/`--loop`/`--json`/`--show <cmd>`：实时回放并以 JSON 流输出/管道给外部 viz。
 - 设计文档 `docs/rustbag-design.md`（§0–§17）。
-

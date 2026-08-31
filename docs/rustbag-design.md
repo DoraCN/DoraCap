@@ -1173,7 +1173,8 @@ rec.finish()?;                                                     // 写 summar
 - `crates/rustbag-core`：核心值类型 + 存储 trait + **`storage::singlefile`（自带单文件 `.rbag` 容器）**
   + `record::Recorder` + `play::Player`。
 - `crates/rustbag-msgs`：`Header`/`Time`/`PointCloud`/`Imu` + `rbag1` 编解码（含 golden / round-trip 测试）。
-- `crates/rustbag`：CLI（`selftest` / `info`；`record` / `play` 待接线）。
+- `crates/rustbag`：CLI（`selftest` / `info` / `play`；`record` 待接线）。
+  `play` 支持 `--rate`/`--loop`/`--json`/`--show <cmd>`，可实时回放、输出单行 JSON、管道给外部 viz。
 
 **与 §9 的分层差异（待审）**：原型把存储后端 + Recorder/Player 直接并入 `rustbag-core`，
 而非 §9 的独立 `storage-mcap` / facade / cli 拆法。优点是启动快；代价是 core 不再“纯 I/O 无关”。
@@ -1188,6 +1189,8 @@ core 只留类型 + trait。**交换后端只需换一个 crate，无需改 core
 - `cargo build` ✅；`cargo test`（rustbag-msgs 6 项）✅；
 - `cargo run -p rustbag -- selftest` → `selftest OK`；
 - `rustbag info <file>` → `messages: 2`、`topic "lidar": rustbag/PointCloud`、`topic "imu": rustbag/Imu`；
+- `rustbag play <file> --json` → 每条消息一行 JSON（点云含解码后 points、IMU 含 lin_acc/ang_vel）；
+  `--show <cmd>` 把 JSON 逐条写入外部进程 stdin（rustbag 管时序、viz 管渲染）。
 - 文件头 `#RBAG`，尾 `RBAG_END` + `data_offset` + `message_count=2`。
 
 **执行方式说明（并行）**：任务按依赖规划为

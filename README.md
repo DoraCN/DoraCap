@@ -18,7 +18,8 @@ record(Imu + PointCloud) → 单文件 .rbag → play → decode → round-trip
   `Recorder` / `Player`（含 rate/loop/非阻塞 `next`/`try_next`/`now`）。
 - `rustbag-msgs`：规范消息 `Header`/`Time`/`PointCloud`/`Imu` + `rbag1` 紧凑编码
   （含 golden 与 round-trip 测试）。
-- `rustbag`：命令行（`selftest` / `info`）。
+- `rustbag`：命令行（`selftest` / `info` / `play`）。`play` 支持 `--rate`/`--loop`，可输出
+  单行 JSON（`--json`）或实时管道给外部可视化进程（`--show <cmd>`）。
 
 ## 快速开始
 
@@ -31,6 +32,10 @@ cargo run -p rustbag -- selftest
 
 # 查看某个 .rbag 的信息
 cargo run -p rustbag -- info <file.rbag>
+
+# 回放（默认摘要 / JSON 流 / 管道给外部 viz）
+cargo run -p rustbag -- play <file.rbag> [--rate 1] [--loop] [--json]
+cargo run -p rustbag -- play <file.rbag> --json --show '<your-viz-cmd>'
 ```
 
 ## 仓库结构
@@ -51,4 +56,3 @@ docs/
 ## License
 
 MIT OR Apache-2.0
-
