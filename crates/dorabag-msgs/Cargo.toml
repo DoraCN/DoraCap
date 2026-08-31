@@ -1,11 +1,11 @@
 [package]
-name = "rustbag-msgs"
+name = "dorabag-msgs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "rustbag_msgs"
+name = "dorabag_msgs"
 
 [dependencies]
 

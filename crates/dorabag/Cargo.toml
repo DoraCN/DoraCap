@@ -1,13 +1,13 @@
 [package]
-name = "rustbag"
+name = "dorabag"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "rustbag"
+name = "dorabag"
 path = "src/main.rs"
 
 [dependencies]
-rustbag-core = { path = "../rustbag-core" }
-rustbag-msgs = { path = "../rustbag-msgs" }
+dorabag-core = { path = "../dorabag-core" }
+dorabag-msgs = { path = "../dorabag-msgs" }

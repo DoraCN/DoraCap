@@ -8,13 +8,13 @@
 use fast_lio::data_source::{DataSource, SimParams, SimSource};
 use fast_lio::laser_mapping::{LaserMapping, LioConfig};
 use fast_lio::types::{LidarType, SensorData, TimeUnit};
-use rustbag_core::{PlayOptions, SingleFileWriter};
-use rustbag_fastlio::{BagDataSource, record_source};
+use dorabag_core::{PlayOptions, SingleFileWriter};
+use dorabag_fastlio::{BagDataSource, record_source};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let run_lio_flag = args.iter().any(|a| a == "--lio");
-    let path = std::env::temp_dir().join("rustbag_fastlio_demo.rbag");
+    let path = std::env::temp_dir().join("dorabag_fastlio_demo.rbag");
     let _ = std::fs::remove_file(&path);
 
     let params = SimParams {

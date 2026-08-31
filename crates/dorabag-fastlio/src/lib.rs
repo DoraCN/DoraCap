@@ -1,16 +1,16 @@
-//! rustbag-fastlio：把 FAST-LIO 的传感器流接入 rustbag。
-//! - 录制：任意 `fast_lio::data_source::DataSource` → `.rbag`（经 `rustbag-msgs` 规范消息）。
+//! dorabag-fastlio：把 FAST-LIO 的传感器流接入 dorabag。
+//! - 录制：任意 `fast_lio::data_source::DataSource` → `.rbag`（经 `dorabag-msgs` 规范消息）。
 //! - 回放：`.rbag` → `fast_lio::data_source::DataSource`，供 FAST-LIO 直接消费。
 
 pub mod conv;
 
 use fast_lio::data_source::{DataSource, NonBlocking};
 use fast_lio::types::SensorData;
-use rustbag_core::{
+use dorabag_core::{
     PlayOptions, Player, Recorder, Result, Schema, SingleFileReader, StorageWriter, Timestamp,
     TryNext,
 };
-use rustbag_msgs::Codec;
+use dorabag_msgs::Codec;
 
 /// 把某个数据源录制进一个 `.rbag`。
 pub fn record_source<W: StorageWriter + 'static>(
@@ -18,8 +18,8 @@ pub fn record_source<W: StorageWriter + 'static>(
     source: &mut dyn DataSource,
 ) -> Result<()> {
     let mut rec = Recorder::new(Box::new(writer));
-    rec.add_channel("imu", &schema_of::<rustbag_msgs::Imu>())?;
-    rec.add_channel("lidar", &schema_of::<rustbag_msgs::PointCloud>())?;
+    rec.add_channel("imu", &schema_of::<dorabag_msgs::Imu>())?;
+    rec.add_channel("lidar", &schema_of::<dorabag_msgs::PointCloud>())?;
     while let Some(data) = source.next() {
         let (channel, ts, buf) = conv::encode(&data);
         rec.write(channel, Timestamp::from_secs_f64(ts), &buf)?;
@@ -27,7 +27,7 @@ pub fn record_source<W: StorageWriter + 'static>(
     rec.finish()
 }
 
-/// 词句：`rustbag-fastlio` 基于 `.rbag` 的 FAST-LIO `DataSource`。
+/// 词句：`dorabag-fastlio` 基于 `.rbag` 的 FAST-LIO `DataSource`。
 pub struct BagDataSource {
     player: Player,
 }

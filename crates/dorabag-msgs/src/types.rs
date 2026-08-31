@@ -48,9 +48,9 @@ pub struct Imu {
 
 /// 能提供语义（传感器）时间的规范消息。
 ///
-/// rustbag 顶层 `Recorder` 依赖它从消息的 `Header` 自动提取调度时间戳，
-/// 而不是要求调用方显式传时间。rustbag 核心仍是类型无关的，只会在
-/// `rustbag-msgs` 这一层通过本 trait 做“消息 → 时间”的映射。
+/// dorabag 顶层 `Recorder` 依赖它从消息的 `Header` 自动提取调度时间戳，
+/// 而不是要求调用方显式传时间。dorabag 核心仍是类型无关的，只会在
+/// `dorabag-msgs` 这一层通过本 trait 做“消息 → 时间”的映射。
 pub trait Stamped {
     /// 返回本消息在 [`Header`] 中的语义时间（传感器时间）。
     fn time(&self) -> Time;

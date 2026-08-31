@@ -1,8 +1,8 @@
 //! 把 `OwnedMessage` 转成一行 JSON，供 `play --json` / `--show <cmd>` 消费。
 //! 不依赖 serde：对规范消息手工序列化；未知类型用 payload hex 兜底。
 
-use rustbag_core::OwnedMessage;
-use rustbag_msgs::{Codec, Imu, PointCloud};
+use dorabag_core::OwnedMessage;
+use dorabag_msgs::{Codec, Imu, PointCloud};
 
 /// 序列化一条消息为单行 JSON。
 pub fn message_to_json(m: &OwnedMessage) -> String {
@@ -12,7 +12,7 @@ pub fn message_to_json(m: &OwnedMessage) -> String {
     f.push(format!("\"type\":{}", json_str(&m.schema.type_name)));
 
     match m.schema.type_name.as_str() {
-        "rustbag/PointCloud" => match PointCloud::decode(&m.payload) {
+        "dorabag/PointCloud" => match PointCloud::decode(&m.payload) {
             Ok(pc) => {
                 f.push(format!("\"frame_id\":{}", json_str(&pc.header.frame_id)));
                 f.push(format!("\"height\":{}", pc.height));
@@ -27,7 +27,7 @@ pub fn message_to_json(m: &OwnedMessage) -> String {
             }
             Err(_) => f.push(format!("\"payload_hex\":{}", json_str(&hex(&m.payload)))),
         },
-        "rustbag/Imu" => match Imu::decode(&m.payload) {
+        "dorabag/Imu" => match Imu::decode(&m.payload) {
             Ok(imu) => {
                 f.push(format!("\"frame_id\":{}", json_str(&imu.header.frame_id)));
                 f.push(format!(

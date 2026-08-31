@@ -1,15 +1,15 @@
-//! rustbag 命令行（最小闭环）：record / play / info / selftest。
+//! dorabag 命令行（最小闭环）：record / play / info / selftest。
 //! `selftest` 验证：record(Imu+PointCloud) -> 单文件 .rbag -> play -> decode -> round-trip。
 
 use std::io::Write;
 use std::process::ExitCode;
 use std::process::{Command, Stdio};
 
-use rustbag_core::{
+use dorabag_core::{
     OwnedMessage, PlayOptions, Player, Recorder, Schema, SingleFileReader, SingleFileWriter,
     StorageReader, Timestamp,
 };
-use rustbag_msgs::{Codec, Header, Imu, PointCloud, PointField, Time};
+use dorabag_msgs::{Codec, Header, Imu, PointCloud, PointField, Time};
 
 mod json;
 
@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         }
         Some("play") => play(&args),
         _ => {
-            eprintln!("usage: rustbag (selftest|info <file>|record|play)");
+            eprintln!("usage: dorabag (selftest|info <file>|record|play)");
             ExitCode::FAILURE
         }
     }
@@ -76,7 +76,7 @@ fn play(args: &[String]) -> ExitCode {
     }
 
     let Some(file) = file else {
-        eprintln!("usage: rustbag play <file> [--rate R] [--loop] [--json] [--show CMD]");
+        eprintln!("usage: dorabag play <file> [--rate R] [--loop] [--json] [--show CMD]");
         return ExitCode::FAILURE;
     };
 
@@ -149,7 +149,7 @@ fn spawn_viz(cmd: &Option<String>) -> Option<std::process::Child> {
 }
 
 fn selftest() -> ExitCode {
-    let path = std::env::temp_dir().join("rustbag_selftest.rbag");
+    let path = std::env::temp_dir().join("dorabag_selftest.rbag");
     let _ = std::fs::remove_file(&path);
     match roundtrip(&path) {
         Ok(()) => {
@@ -162,7 +162,7 @@ fn selftest() -> ExitCode {
 
 fn info(path: Option<&str>) -> ExitCode {
     let Some(path) = path else {
-        eprintln!("usage: rustbag info <file.rbag>");
+        eprintln!("usage: dorabag info <file.rbag>");
         return ExitCode::FAILURE;
     };
     let reader = match SingleFileReader::open(path) {
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn roundtrip_works() {
         let path =
-            std::env::temp_dir().join(format!("rustbag_roundtrip_{}.rbag", std::process::id()));
+            std::env::temp_dir().join(format!("dorabag_roundtrip_{}.rbag", std::process::id()));
         let _ = std::fs::remove_file(&path);
         roundtrip(&path).expect("roundtrip should succeed");
         // 单文件且带结尾索引

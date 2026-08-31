@@ -234,7 +234,7 @@ impl SingleFileReader {
             .map_err(|e| Error::msg(e.to_string()))?;
 
         if data.len() < MAGIC.len() || &data[..MAGIC.len()] != MAGIC {
-            return Err(Error::msg("not a rustbag (.rbag) file"));
+            return Err(Error::msg("not a dorabag (.rbag) file"));
         }
         let mut pos = MAGIC.len();
         let version = read_u32(&data, &mut pos)?;
