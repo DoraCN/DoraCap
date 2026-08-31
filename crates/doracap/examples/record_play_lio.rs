@@ -357,11 +357,21 @@ mod app {
 
     /// 为指定的 LiDAR 类型给出 FAST-LIO 建图配置（Livox 走 Avia，仿真走 Velo16）。
     fn lio_cfg(lidar_type: LidarType) -> LioConfig {
+        // fast-lio 0.1.0 的 Preprocess::new 把内部 pl_buff/typess 按默认 n_scans=6 预分配，
+        // 而 LaserMapping::new 之后才用 cfg.n_scans 覆盖 preprocess.n_scans，并不重新扩容。
+        // Avia 路径里 `for i in 0..n_scans { pl_buff[i] }` 是无条件执行的，因此 n_scans 必须 =6，
+        // 否则第一帧就越界。Livox Mid-360 又是单扫描线(line=0)，n_scans=6 与 fast-lio-app 一致。
+        let n_scans = match lidar_type {
+            LidarType::Avia => 6,
+            // Velo16 这里 feature_extract_enable=false，pl_buff 的遍历在 feature 分支内，
+            // 故 n_scans=16 不触发越界；若开启 feature 需先修 fast-lio 的扩容 bug。
+            _ => 16,
+        };
         LioConfig {
             lidar_type,
             feature_extract_enable: false,
             point_filter_num: 2,
-            n_scans: 16,
+            n_scans,
             scan_rate: 10,
             timestamp_unit: TimeUnit::Us,
             filter_size_surf: 0.5,
