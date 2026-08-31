@@ -274,6 +274,35 @@ impl DataSource for BagSource {
 **FAST-LIO 核心库一行不改**，因为它依然在面对它的 `DataSource`；只是这次 `DataSource` 的底层来源
 从“硬件/模拟”变成了“doracap 回放”。这一点与现在的 `SimSource` / `LivoxSource` 完全平级。
 
+### 8.3 端到端验收示例（`doracap` example）
+
+真正的“测试”不需要另起一个 crate——在 `doracap` 下放一个 example（`examples/record_play_lio.rs`）
+就能串起整条链路，且不进 doracap 的公共 API：
+
+```
+数据源(SimSource / LivoxSource) → LioRecorder 一遍录制 → 自洽 .dcap(imu+lidar+pose)
+                              → BagDataSource 回放 → FAST-LIO 建图 → map.pcd + pos_log.txt
+```
+
+- 仿真路径 `--features fastlio`：纯 Rust，无硬件/CMake，任何机器可跑；用于验证“录出来的 `.dcap`
+  能驱动 FAST-LIO”。
+- 真机路径 `--features livox`：通过 `fast-lio-driver` 连接 Livox，按墙上时钟限时录制；
+  产物 `.dcap` 与 FAST-LIO 直跑的对齐，可交给独立 RViz 类工具回放。
+  - `--duration` 默认 `0`（不限时长）：录制持续进行，直到显式传 `--duration N` 到点，
+    或手动 **Ctrl+C**。Ctrl+C 也走优雅收尾（先 `finish()` 写出 `.dcap` 尾部索引再继续建图导出），
+    保证被中断的文件依然可回放。
+- **一遍录制**：`doracap-fastlio::LioRecorder` 在 `push` 每条传感器样本时同步写 `imu`/`lidar`
+  并喂给 FAST-LIO；每帧 `run_once()` 出一个位姿，就以该帧时间戳把它作为 **`doracap/PoseStamped`**
+  通道写进**同一个** `.dcap`。因此产出的 `.dcap` 同时含“原始传感器帧 + 每帧位姿”，是**自洽的建图
+  过程回放源**：外部可视化工具无需重跑 SLAM，只需按位姿把原始帧累加到世界系，就能播放/暂停/拖动
+  看到地图逐帧生长。
+- **真机 bring-up**：提供 `--discover`（打开 Livox SDK2、打印探测到的设备）与可编辑配置模板
+  `configs/livox/mid360_config.json`（把 `host_ip` 改成机器人网卡在雷达网段的 IP）。这是上真机前
+  最快的自检：先 `--discover` 确认雷达可达，再 `--live` 采集+建图。
+
+`fast-lio-driver`（含 `livox-sdk2`）只作为 **optional 依赖**挂在 `doracap` 的 `livox` 特性下，
+因此 `cargo build --all` / `cargo test --all` 不会拖入 Livox SDK 的构建成本，也无需 cmake。
+
 ---
 
 ## 9. 仓库 / CRATE 结构

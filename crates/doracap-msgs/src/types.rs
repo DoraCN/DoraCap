@@ -46,6 +46,17 @@ pub struct Imu {
     pub lin_acc_cov: [f64; 9],
 }
 
+/// 带头的位姿消息（几何：position + orientation[w,x,y,z]）。
+///
+/// 这正是“建图过程回放”所需要的**每帧位姿**：可视化工具用它与原始点云帧配合，
+/// 把每一帧从机体坐标变换到世界坐标，从而累加出正在生长的地图/轨迹。
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoseStamped {
+    pub header: Header,
+    pub position: [f64; 3],
+    pub orientation: [f64; 4],
+}
+
 /// 能提供语义（传感器）时间的规范消息。
 ///
 /// doracap 顶层 `Recorder` 依赖它从消息的 `Header` 自动提取调度时间戳，
@@ -63,6 +74,12 @@ impl Stamped for PointCloud {
 }
 
 impl Stamped for Imu {
+    fn time(&self) -> Time {
+        self.header.stamp
+    }
+}
+
+impl Stamped for PoseStamped {
     fn time(&self) -> Time {
         self.header.stamp
     }

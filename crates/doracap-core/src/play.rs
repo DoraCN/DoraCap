@@ -59,7 +59,10 @@ impl Player {
     /// 打开回放。加载全部消息，并按回放选项设置调度基准。
     pub fn open(reader: Box<dyn StorageReader>, options: PlayOptions) -> Result<Self> {
         let mut reader = reader;
-        let messages = reader.read_all()?;
+        let mut messages = reader.read_all()?;
+        // 回放必须按时间轴有序。录制端可能因“位姿晚于传感器几毫秒”或真机多线程乱序
+        // 写入文件，因此在加载时按 `stamp` 稳定排序，保证播放/seek 正确。
+        messages.sort_by_key(|a| a.stamp);
         Ok(Player {
             reader,
             options,
@@ -73,6 +76,59 @@ impl Player {
     /// 当前所有消息（供 info / 查询）。
     pub fn messages(&self) -> &[OwnedMessage] {
         &self.messages
+    }
+
+    /// 首条消息的调度时间。
+    pub fn first_stamp(&self) -> Option<Timestamp> {
+        self.messages.first().map(|m| m.stamp)
+    }
+
+    /// 末条消息的调度时间。
+    pub fn last_stamp(&self) -> Option<Timestamp> {
+        self.messages.last().map(|m| m.stamp)
+    }
+
+    /// 整段回放的时间跨度（`last - first`）。
+    pub fn duration(&self) -> Timestamp {
+        match (self.first_stamp(), self.last_stamp()) {
+            (Some(a), Some(b)) => Timestamp(b.0.saturating_sub(a.0)),
+            _ => Timestamp(0),
+        }
+    }
+
+    /// 把播放头跳到**首个 `stamp >= target`** 的消息。支持任意拖动。
+    pub fn seek(&mut self, target: Timestamp) {
+        let idx = self.messages.partition_point(|m| m.stamp < target);
+        self.pos = idx.min(self.messages.len());
+        // 重新锚定时间轴：让读取端把“现在”当作目标时刻，rate>0 时从该点继续节流。
+        let anchor = self
+            .messages
+            .get(self.pos)
+            .map(|m| m.stamp)
+            .unwrap_or(target);
+        self.first_ts = Some(anchor);
+        self.start = Some(Instant::now());
+    }
+
+    /// 按比例（0.0..=1.0）把播放头跳到时间轴上对应位置。
+    pub fn seek_ratio(&mut self, ratio: f64) {
+        let first = self.first_stamp().unwrap_or(Timestamp(0)).0;
+        let last = self.last_stamp().unwrap_or(Timestamp(0)).0;
+        let dur = last.saturating_sub(first);
+        let target = first + (dur as f64 * ratio.clamp(0.0, 1.0)) as u64;
+        self.seek(Timestamp(target));
+    }
+
+    /// 调整播放倍速（0 = 不限速；>0 = 实时倍率）。重新锚定“现在=当前播放头”。
+    pub fn set_rate(&mut self, rate: f64) {
+        self.options.rate = rate;
+        let cur = self
+            .messages
+            .get(self.pos)
+            .map(|m| m.stamp)
+            .unwrap_or_else(|| self.first_ts.unwrap_or(Timestamp(0)));
+        self.first_ts = Some(cur);
+        self.start = Some(Instant::now());
     }
 
     fn init_time(&mut self) {
@@ -165,5 +221,60 @@ impl Player {
         self.start = None;
         self.first_ts = None;
         self.init_time();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{ChannelMeta, OwnedMessage, Schema};
+    use crate::storage::StorageReader;
+
+    /// 简单的内存读端，用于测排序/seek，而不依赖具体文件。
+    struct MemReader(Vec<OwnedMessage>);
+    impl StorageReader for MemReader {
+        fn schemas(&self) -> &[Schema] {
+            &[]
+        }
+        fn channels(&self) -> &[ChannelMeta] {
+            &[]
+        }
+        fn read_all(&mut self) -> Result<Vec<OwnedMessage>> {
+            Ok(std::mem::take(&mut self.0))
+        }
+    }
+
+    fn msg(ns: u64) -> OwnedMessage {
+        OwnedMessage {
+            channel: "c".into(),
+            stamp: Timestamp(ns),
+            schema: Schema {
+                id: 0,
+                type_name: "t".into(),
+                encoding: "e".into(),
+            },
+            payload: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn sorts_by_stamp_then_seeks() {
+        let reader = MemReader(vec![msg(30), msg(10), msg(20)]);
+        let mut player = Player::open(Box::new(reader), PlayOptions::default()).unwrap();
+
+        // 打开后按时间有序
+        assert_eq!(player.messages()[0].stamp, Timestamp(10));
+        assert_eq!(player.messages()[2].stamp, Timestamp(30));
+        assert_eq!(player.duration(), Timestamp(20));
+
+        // 跳转到 20ns
+        player.seek(Timestamp(20));
+        assert_eq!(player.next_message().unwrap().stamp, Timestamp(20));
+        assert_eq!(player.next_message().unwrap().stamp, Timestamp(30));
+        assert!(player.next_message().is_none());
+
+        // 按比例拖动到末尾
+        player.seek_ratio(1.0);
+        assert_eq!(player.next_message().unwrap().stamp, Timestamp(30));
     }
 }

@@ -11,3 +11,32 @@ path = "src/main.rs"
 [dependencies]
 doracap-core = { path = "../doracap-core" }
 doracap-msgs = { path = "../doracap-msgs" }
+
+# 示例（example）使用的特性；默认关闭，避免普通构建/测试被拖入 FAST-LIO 与 Livox SDK。
+#   fastlio : 仿真数据源 -> .dcap -> FAST-LIO 建图（纯 Rust，无需硬件/CMake）
+#   livox   : 真机 Livox 实时采集 -> .dcap -> FAST-LIO 建图（依赖 livox-sdk2，需 cmake + C++）
+[features]
+default = []
+fastlio = ["dep:doracap-fastlio", "dep:fast-lio"]
+livox = ["fastlio", "dep:fast-lio-driver", "dep:ctrlc", "dep:livox-sdk2"]
+
+[dependencies.doracap-fastlio]
+path = "../doracap-fastlio"
+optional = true
+
+[dependencies.fast-lio]
+version = "0.1.0"
+optional = true
+
+[dependencies.fast-lio-driver]
+version = "0.1.0"
+optional = true
+features = ["livox-sdk2"]
+
+[dependencies.ctrlc]
+version = "3"
+optional = true
+
+[dependencies.livox-sdk2]
+version = "0.1"
+optional = true

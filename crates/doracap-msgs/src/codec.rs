@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use crate::types::{Header, Imu, PointCloud, PointField, Time};
+use crate::types::{Header, Imu, PointCloud, PointField, PoseStamped, Time};
 
 #[derive(Debug)]
 pub struct DecodeError(pub String);
@@ -246,6 +246,31 @@ fn decode_imu(buf: &[u8]) -> DecodeResult<Imu> {
     })
 }
 
+fn encode_pose(p: &PoseStamped, out: &mut Vec<u8>) {
+    push_header(out, &p.header);
+    for v in p.position {
+        push_f64(out, v);
+    }
+    for q in p.orientation {
+        push_f64(out, q);
+    }
+}
+
+fn decode_pose(buf: &[u8]) -> DecodeResult<PoseStamped> {
+    let mut c = Cursor::new(buf);
+    let header = dec_header(&mut c)?;
+    let position = c.f64_arr()?;
+    let orientation = c.f64_arr()?;
+    if c.pos != c.b.len() {
+        return Err(DecodeError("trailing bytes".into()));
+    }
+    Ok(PoseStamped {
+        header,
+        position,
+        orientation,
+    })
+}
+
 impl_codec_msg!(
     PointCloud,
     "doracap/PointCloud",
@@ -253,11 +278,12 @@ impl_codec_msg!(
     decode_pointcloud
 );
 impl_codec_msg!(Imu, "doracap/Imu", encode_imu, decode_imu);
+impl_codec_msg!(PoseStamped, "doracap/PoseStamped", encode_pose, decode_pose);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Header, Imu, PointCloud, PointField, Stamped, Time};
+    use crate::types::{Header, Imu, PointCloud, PointField, PoseStamped, Stamped, Time};
 
     fn ts(sec: i64, nsec: u32) -> Time {
         Time { sec, nsec }
@@ -361,6 +387,24 @@ mod tests {
         sample_imu().encode(&mut buf);
         let cut = &buf[..buf.len() - 1];
         assert!(Imu::decode(cut).is_err());
+    }
+
+    #[test]
+    fn pose_roundtrip() {
+        let pose = PoseStamped {
+            header: Header {
+                stamp: ts(1, 2),
+                frame_id: "map".into(),
+            },
+            position: [1.5, -2.5, 3.5],
+            orientation: [1.0, 0.0, 0.0, 0.0],
+        };
+        let mut buf = Vec::new();
+        pose.encode(&mut buf);
+        let back = PoseStamped::decode(&buf).unwrap();
+        assert_eq!(pose, back);
+        assert_eq!(back.time(), pose.header.stamp);
+        assert!(PoseStamped::decode(&[]).is_err());
     }
 
     #[test]

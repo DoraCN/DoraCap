@@ -36,6 +36,8 @@ fn play(args: &[String]) -> ExitCode {
     let mut loop_ = false;
     let mut as_json = false;
     let mut show: Option<String> = None;
+    let mut seek: Option<f64> = None;
+    let mut seek_ratio: Option<f64> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -47,6 +49,30 @@ fn play(args: &[String]) -> ExitCode {
         }
         if let Some(v) = a.strip_prefix("--rate=") {
             rate = v.parse().unwrap_or(0.0);
+            i += 1;
+            continue;
+        }
+        if a == "--seek"
+            && let Some(v) = args.get(i + 1)
+        {
+            seek = v.parse().ok();
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--seek=") {
+            seek = v.parse().ok();
+            i += 1;
+            continue;
+        }
+        if a == "--seek-ratio"
+            && let Some(v) = args.get(i + 1)
+        {
+            seek_ratio = v.parse().ok();
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--seek-ratio=") {
+            seek_ratio = v.parse().ok();
             i += 1;
             continue;
         }
@@ -92,6 +118,18 @@ fn play(args: &[String]) -> ExitCode {
         Ok(p) => p,
         Err(e) => return fail(&e.to_string()),
     };
+    if let Some(r) = seek {
+        player.seek(doracap_core::Timestamp::from_secs_f64(r));
+    }
+    if let Some(r) = seek_ratio {
+        player.seek_ratio(r);
+    }
+    eprintln!(
+        "play: {} msgs, range {:.3}..{:.3}s, rate={rate}",
+        player.messages().len(),
+        player.first_stamp().map(|t| t.to_secs_f64()).unwrap_or(0.0),
+        player.last_stamp().map(|t| t.to_secs_f64()).unwrap_or(0.0)
+    );
 
     let mut viz = spawn_viz(&show);
     while let Some(m) = player.next_message() {
