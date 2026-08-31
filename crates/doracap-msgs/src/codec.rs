@@ -248,11 +248,11 @@ fn decode_imu(buf: &[u8]) -> DecodeResult<Imu> {
 
 impl_codec_msg!(
     PointCloud,
-    "dorabag/PointCloud",
+    "doracap/PointCloud",
     encode_pointcloud,
     decode_pointcloud
 );
-impl_codec_msg!(Imu, "dorabag/Imu", encode_imu, decode_imu);
+impl_codec_msg!(Imu, "doracap/Imu", encode_imu, decode_imu);
 
 #[cfg(test)]
 mod tests {

@@ -1,25 +1,25 @@
-//! dorabag-fastlio：把 FAST-LIO 的传感器流接入 dorabag。
-//! - 录制：任意 `fast_lio::data_source::DataSource` → `.rbag`（经 `dorabag-msgs` 规范消息）。
-//! - 回放：`.rbag` → `fast_lio::data_source::DataSource`，供 FAST-LIO 直接消费。
+//! doracap-fastlio：把 FAST-LIO 的传感器流接入 doracap。
+//! - 录制：任意 `fast_lio::data_source::DataSource` → `.dcap`（经 `doracap-msgs` 规范消息）。
+//! - 回放：`.dcap` → `fast_lio::data_source::DataSource`，供 FAST-LIO 直接消费。
 
 pub mod conv;
 
 use fast_lio::data_source::{DataSource, NonBlocking};
 use fast_lio::types::SensorData;
-use dorabag_core::{
+use doracap_core::{
     PlayOptions, Player, Recorder, Result, Schema, SingleFileReader, StorageWriter, Timestamp,
     TryNext,
 };
-use dorabag_msgs::Codec;
+use doracap_msgs::Codec;
 
-/// 把某个数据源录制进一个 `.rbag`。
+/// 把某个数据源录制进一个 `.dcap`。
 pub fn record_source<W: StorageWriter + 'static>(
     writer: W,
     source: &mut dyn DataSource,
 ) -> Result<()> {
     let mut rec = Recorder::new(Box::new(writer));
-    rec.add_channel("imu", &schema_of::<dorabag_msgs::Imu>())?;
-    rec.add_channel("lidar", &schema_of::<dorabag_msgs::PointCloud>())?;
+    rec.add_channel("imu", &schema_of::<doracap_msgs::Imu>())?;
+    rec.add_channel("lidar", &schema_of::<doracap_msgs::PointCloud>())?;
     while let Some(data) = source.next() {
         let (channel, ts, buf) = conv::encode(&data);
         rec.write(channel, Timestamp::from_secs_f64(ts), &buf)?;
@@ -27,7 +27,7 @@ pub fn record_source<W: StorageWriter + 'static>(
     rec.finish()
 }
 
-/// 词句：`dorabag-fastlio` 基于 `.rbag` 的 FAST-LIO `DataSource`。
+/// 词句：`doracap-fastlio` 基于 `.dcap` 的 FAST-LIO `DataSource`。
 pub struct BagDataSource {
     player: Player,
 }

@@ -1,15 +1,15 @@
-//! dorabag 命令行（最小闭环）：record / play / info / selftest。
-//! `selftest` 验证：record(Imu+PointCloud) -> 单文件 .rbag -> play -> decode -> round-trip。
+//! doracap 命令行（最小闭环）：record / play / info / selftest。
+//! `selftest` 验证：record(Imu+PointCloud) -> 单文件 .dcap -> play -> decode -> round-trip。
 
 use std::io::Write;
 use std::process::ExitCode;
 use std::process::{Command, Stdio};
 
-use dorabag_core::{
+use doracap_core::{
     OwnedMessage, PlayOptions, Player, Recorder, Schema, SingleFileReader, SingleFileWriter,
     StorageReader, Timestamp,
 };
-use dorabag_msgs::{Codec, Header, Imu, PointCloud, PointField, Time};
+use doracap_msgs::{Codec, Header, Imu, PointCloud, PointField, Time};
 
 mod json;
 
@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         }
         Some("play") => play(&args),
         _ => {
-            eprintln!("usage: dorabag (selftest|info <file>|record|play)");
+            eprintln!("usage: doracap (selftest|info <file>|record|play)");
             ExitCode::FAILURE
         }
     }
@@ -76,7 +76,7 @@ fn play(args: &[String]) -> ExitCode {
     }
 
     let Some(file) = file else {
-        eprintln!("usage: dorabag play <file> [--rate R] [--loop] [--json] [--show CMD]");
+        eprintln!("usage: doracap play <file> [--rate R] [--loop] [--json] [--show CMD]");
         return ExitCode::FAILURE;
     };
 
@@ -149,7 +149,7 @@ fn spawn_viz(cmd: &Option<String>) -> Option<std::process::Child> {
 }
 
 fn selftest() -> ExitCode {
-    let path = std::env::temp_dir().join("dorabag_selftest.rbag");
+    let path = std::env::temp_dir().join("doracap_selftest.dcap");
     let _ = std::fs::remove_file(&path);
     match roundtrip(&path) {
         Ok(()) => {
@@ -162,7 +162,7 @@ fn selftest() -> ExitCode {
 
 fn info(path: Option<&str>) -> ExitCode {
     let Some(path) = path else {
-        eprintln!("usage: dorabag info <file.rbag>");
+        eprintln!("usage: doracap info <file.dcap>");
         return ExitCode::FAILURE;
     };
     let reader = match SingleFileReader::open(path) {
@@ -322,14 +322,14 @@ mod tests {
     #[test]
     fn roundtrip_works() {
         let path =
-            std::env::temp_dir().join(format!("dorabag_roundtrip_{}.rbag", std::process::id()));
+            std::env::temp_dir().join(format!("doracap_roundtrip_{}.dcap", std::process::id()));
         let _ = std::fs::remove_file(&path);
         roundtrip(&path).expect("roundtrip should succeed");
         // 单文件且带结尾索引
-        let bytes = std::fs::read(&path).expect("read .rbag");
-        assert_eq!(&bytes[..5], b"#RBAG");
-        // 尾部 = RBAG_END(8) + data_offset(8) + message_count(8)
-        assert_eq!(&bytes[bytes.len() - 24..bytes.len() - 16], b"RBAG_END");
+        let bytes = std::fs::read(&path).expect("read .dcap");
+        assert_eq!(&bytes[..5], b"#DCAP");
+        // 尾部 = DCAP_END(8) + data_offset(8) + message_count(8)
+        assert_eq!(&bytes[bytes.len() - 24..bytes.len() - 16], b"DCAP_END");
         let _ = std::fs::remove_file(&path);
     }
 }

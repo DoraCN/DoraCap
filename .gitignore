@@ -1,4 +1,4 @@
 /target
-**/*.rbag
+**/*.dcap
 .agents/
 .codex/

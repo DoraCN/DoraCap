@@ -1,20 +1,20 @@
 //! 胶水验证 demo：
 //! 1. 用 FAST-LIO 的 `SimSource` 生成传感器流。
-//! 2. `record_source` 把它录进一个 `.rbag`。
-//! 3. `BagDataSource` 从 `.rbag` 回放成 `SensorData` 流。
+//! 2. `record_source` 把它录进一个 `.dcap`。
+//! 3. `BagDataSource` 从 `.dcap` 回放成 `SensorData` 流。
 //! 4. 与一个全新的 `SimSource`（同参数、确定性）逐条比对（round-trip）。
 //! 5. 可选 `--lio`：跑一次 FAST-LIO `LaserMapping`，证明录制的 bag 能驱动建图。
 
 use fast_lio::data_source::{DataSource, SimParams, SimSource};
 use fast_lio::laser_mapping::{LaserMapping, LioConfig};
 use fast_lio::types::{LidarType, SensorData, TimeUnit};
-use dorabag_core::{PlayOptions, SingleFileWriter};
-use dorabag_fastlio::{BagDataSource, record_source};
+use doracap_core::{PlayOptions, SingleFileWriter};
+use doracap_fastlio::{BagDataSource, record_source};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let run_lio_flag = args.iter().any(|a| a == "--lio");
-    let path = std::env::temp_dir().join("dorabag_fastlio_demo.rbag");
+    let path = std::env::temp_dir().join("doracap_fastlio_demo.dcap");
     let _ = std::fs::remove_file(&path);
 
     let params = SimParams {

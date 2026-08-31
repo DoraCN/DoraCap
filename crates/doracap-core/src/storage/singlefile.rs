@@ -1,13 +1,13 @@
-//! 自包含的单文件 `.rbag` 容器后端（纯 std，零外部依赖）。
+//! 自包含的单文件 `.dcap` 容器后端（纯 std，零外部依赖）。
 //!
 //! 布局（全小端）：
-//!   Header   : magic b"#RBAG"(5) + version u32 + flags u32
+//!   Header   : magic b"#DCAP"(5) + version u32 + flags u32
 //!   Schema   : u32 count; 每条 { u16 id; str type_name; str encoding }
 //!   Channel  : u32 count; 每条 { u16 id; str name; u16 schema_id }
 //!   Messages : 每条 { u16 channel_id; u64 stamp; u32 len; payload }; `data_offset` 为其起点
-//!   Footer   : magic b"RBAG_END"(8) + u64 data_offset + u64 message_count
+//!   Footer   : magic b"DCAP_END"(8) + u64 data_offset + u64 message_count
 //!
-//! 读取时若尾部存在 Footer 则快速定位；否则线性扫描直到 `RBAG_END` 或截断尾巴。
+//! 读取时若尾部存在 Footer 则快速定位；否则线性扫描直到 `DCAP_END` 或截断尾巴。
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -17,10 +17,10 @@ use std::path::Path;
 use crate::message::{ChannelMeta, Error, OwnedMessage, Result, Schema, Timestamp};
 use crate::storage::{ChannelId, SchemaId, StorageReader, StorageWriter};
 
-const MAGIC: &[u8; 5] = b"#RBAG";
+const MAGIC: &[u8; 5] = b"#DCAP";
 const VERSION: u32 = 1;
 const FLAGS: u32 = 0;
-const END_MAGIC: &[u8; 8] = b"RBAG_END";
+const END_MAGIC: &[u8; 8] = b"DCAP_END";
 
 fn push_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(&(s.len() as u32).to_le_bytes());
@@ -66,7 +66,7 @@ fn read_str(d: &[u8], pos: &mut usize) -> Result<String> {
     Ok(s)
 }
 
-/// 单文件 `.rbag` 写端。
+/// 单文件 `.dcap` 写端。
 pub struct SingleFileWriter {
     file: Option<BufWriter<File>>,
     schemas: Vec<Schema>,
@@ -81,7 +81,7 @@ pub struct SingleFileWriter {
 }
 
 impl SingleFileWriter {
-    /// 打开（创建/截断）一个 `.rbag` 文件用于写入。
+    /// 打开（创建/截断）一个 `.dcap` 文件用于写入。
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let file = File::create(path).map_err(|e| Error::msg(format!("create {:?}: {e}", path)))?;
@@ -215,7 +215,7 @@ impl Drop for SingleFileWriter {
     }
 }
 
-/// 单文件 `.rbag` 读端。
+/// 单文件 `.dcap` 读端。
 pub struct SingleFileReader {
     schemas: Vec<Schema>,
     channels: Vec<ChannelMeta>,
@@ -225,7 +225,7 @@ pub struct SingleFileReader {
 }
 
 impl SingleFileReader {
-    /// 打开一个 `.rbag` 文件读取。
+    /// 打开一个 `.dcap` 文件读取。
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let mut f = File::open(path).map_err(|e| Error::msg(format!("open {:?}: {e}", path)))?;
@@ -234,7 +234,7 @@ impl SingleFileReader {
             .map_err(|e| Error::msg(e.to_string()))?;
 
         if data.len() < MAGIC.len() || &data[..MAGIC.len()] != MAGIC {
-            return Err(Error::msg("not a dorabag (.rbag) file"));
+            return Err(Error::msg("not a doracap (.dcap) file"));
         }
         let mut pos = MAGIC.len();
         let version = read_u32(&data, &mut pos)?;

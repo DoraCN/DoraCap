@@ -1,15 +1,15 @@
 [package]
-name = "dorabag-fastlio"
+name = "doracap-fastlio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "dorabag_fastlio"
+name = "doracap_fastlio"
 
 [dependencies]
-dorabag-core = { path = "../dorabag-core" }
-dorabag-msgs = { path = "../dorabag-msgs" }
+doracap-core = { path = "../doracap-core" }
+doracap-msgs = { path = "../doracap-msgs" }
 fast-lio = { path = "/tmp/fastlio/crates/fast-lio" }
 
 [[bin]]

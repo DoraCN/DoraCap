@@ -1,11 +1,11 @@
 [package]
-name = "dorabag-core"
+name = "doracap-msgs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "dorabag_core"
+name = "doracap_msgs"
 
 [dependencies]
 

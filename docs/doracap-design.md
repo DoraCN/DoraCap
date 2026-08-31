@@ -1,26 +1,26 @@
-# DoraBag 设计方案（独立、与建图/导航库解耦的录制与回放库）
+# DoraCap 设计方案（独立、与建图/导航库解耦的录制与回放库）
 
 > 本文产出：针对“做一个**不绑定任何建图/导航系统**的通用 Rust bag（录制 + 回放）”的完整设计。
-> 目标：任意库只要满足 dorabag 的几条要求，就能用 dorabag 做录制与回放。
-> 文中以 FAST-LIO 的 Rust 移植版作为**第一个接入方（consumer）**来回推设计，但 dorabag 本身
+> 目标：任意库只要满足 doracap 的几条要求，就能用 doracap 做录制与回放。
+> 文中以 FAST-LIO 的 Rust 移植版作为**第一个接入方（consumer）**来回推设计，但 doracap 本身
 > **不包含、不依赖任何 FAST-LIO 类型**。
 
 ---
 
 ## 0. 结论摘要（TL;DR）
 
-- dorabag **不服务特定建图/导航库**：它是一个**类型无关的容器 + 时间调度引擎**。
-- dorabag 唯一认识的消息结构是四元组：**“主题(topic) + 时间戳(timestamp) + 模式(schema) + 字节(payload)”**。
-- 任何库要使用 dorabag，只需满足**一份最小契约**（见 §4）：给消息一个主题名、一个单调递增时间戳、
+- doracap **不服务特定建图/导航库**：它是一个**类型无关的容器 + 时间调度引擎**。
+- doracap 唯一认识的消息结构是四元组：**“主题(topic) + 时间戳(timestamp) + 模式(schema) + 字节(payload)”**。
+- 任何库要使用 doracap，只需满足**一份最小契约**（见 §4）：给消息一个主题名、一个单调递增时间戳、
   一份可序列化的字节表示，并注册一份 schema 描述。其余（消息是什么、单位是什么、怎么解码）全部由
-  **调用方**负责，dorabag 一概不管。
-- 因此 dorabag 是**独立仓库/独立发布的通用库**。接入 FAST-LIO（或任何别的 LIO/SLAM/导航库）时，
-  只需要在**对方项目里**写一层很薄的“胶水适配器”（把 dorabag 的字节流转成它自己的 `DataSource`），
-  而**不把任何库的类型塞进 dorabag**。
-- 类比：dorabag ≈ “ROS 的 rosbag/rosbag2 的通用内核”，但把类型系统、QoS、时钟这些 ROS 负担彻底抽掉，
+  **调用方**负责，doracap 一概不管。
+- 因此 doracap 是**独立仓库/独立发布的通用库**。接入 FAST-LIO（或任何别的 LIO/SLAM/导航库）时，
+  只需要在**对方项目里**写一层很薄的“胶水适配器”（把 doracap 的字节流转成它自己的 `DataSource`），
+  而**不把任何库的类型塞进 doracap**。
+- 类比：doracap ≈ “ROS 的 rosbag/rosbag2 的通用内核”，但把类型系统、QoS、时钟这些 ROS 负担彻底抽掉，
   只留下**以字节为载体的时间序列容器**。
 - **最终目标（单文件原则）**：录制时把 schema 注册表、所有频道/消息、索引、场景元数据、压缩
-  **全部写进一个 `.rbag` 文件**；回放读取该 `.rbag`，即可交给独立的 RViz 类工具进行可视化回放。
+  **全部写进一个 `.dcap` 文件**；回放读取该 `.dcap`，即可交给独立的 RViz 类工具进行可视化回放。
   详见 §6。
 
 ---
@@ -30,12 +30,12 @@
 上一版我建议“与 `fast-lio-driver` 平级的兄弟 crate”，那是**以 FAST-LIO 为中心**的做法——直接依赖
 `fast_lio::data_source::DataSource` 和 `fast_lio::types::SensorData`。这确实简单，但带来两个问题：
 
-1. **dorabag 和 FAST-LIO 的类型强绑定**：`dorabag` 一旦依赖 `SensorData`，就永远只能服务 FAST-LIO；
+1. **doracap 和 FAST-LIO 的类型强绑定**：`doracap` 一旦依赖 `SensorData`，就永远只能服务 FAST-LIO；
    换一个 SLAM/导航库，就得重写一个“同样但不同”的 bag。
 2. **边界越界**：建图导航库是“高内聚的算法层”，而 bag 是“通用的持久化层”。通用的东西不该知道
    特定算法的类型。
 
-**解耦的核心手段**：dorabag 不去理解“IMU 是 f64 秒、激光有逐点 offset_time、位姿是 quaternion”，
+**解耦的核心手段**：doracap 不去理解“IMU 是 f64 秒、激光有逐点 offset_time、位姿是 quaternion”，
 它只做三件通用的事：
 
 - **存**：把一段字节按“主题 + 时间戳 + schema”写进自描述容器。
@@ -46,30 +46,30 @@
 
 ---
 
-## 2. 解耦的核心抽象：dorabag 只认识一个四元组
+## 2. 解耦的核心抽象：doracap 只认识一个四元组
 
-dorabag 内部的“消息”定义为：
+doracap 内部的“消息”定义为：
 
 ```rust
 pub struct Message<'a> {
-    pub channel:  &'a str,     // 主题名，如 "imu"、"lidar"（dorabag 不理解其语义）
+    pub channel:  &'a str,     // 主题名，如 "imu"、"lidar"（doracap 不理解其语义）
     pub stamp:    Timestamp,   // 回放调度的依据（整数，带单位，见 §5）
     pub schema:   &'a Schema,  // 自描述元数据（类型名、编码、可选字段表）
-    pub payload:  &'a [u8],    // 调用方序列化后的字节，dorabag 不做任何解码
+    pub payload:  &'a [u8],    // 调用方序列化后的字节，doracap 不做任何解码
 }
 ```
 
-- dorabag **永远不**命中 “`ImuRaw` / `AviaMsg` / `SensorData` / `LioConfig`” 等具体类型。
+- doracap **永远不**命中 “`ImuRaw` / `AviaMsg` / `SensorData` / `LioConfig`” 等具体类型。
 - 这正是 ROS2 里 `rmw_serialized_message_t`（串行化字节）+ `message_definition`（类型描述）的
-  思路，但 dorabag 把“有没有 /clock、有没有 QoS、是不是 DDS”这些 ROS 包袱全部去掉。
+  思路，但 doracap 把“有没有 /clock、有没有 QoS、是不是 DDS”这些 ROS 包袱全部去掉。
 
 ---
 
-## 3. 分层架构：dorabag 与消费者之间隔着一层“胶水”
+## 3. 分层架构：doracap 与消费者之间隔着一层“胶水”
 
 ```
 ┌─────────────────────────────┐
-│   dorabag（通用内核）          │   ← 独立仓库，零领域类型
+│   doracap（通用内核）          │   ← 独立仓库，零领域类型
 │  - 容器/索引（chunk+index）    │
 │  - 时间调度引擎（rate/loop）    │
 │  - schema 注册表、工具         │
@@ -77,38 +77,38 @@ pub struct Message<'a> {
                │ 只通过 Message 四元组交互
 ┌──────────────▼──────────────┐
 │  胶水适配器（在消费者项目里）     │   ← 只在这里知道“两种世界”的类型
-│  dorabag-fastlio：bytes ⇄ SensorData │
+│  doracap-fastlio：bytes ⇄ SensorData │
 │  序列化 + 时间戳提取 + DataSource 包装 │
 └──────────────┬──────────────┘
                │ 实现 consumer 自己的抽象
 ┌──────────────▼──────────────┐
 │  FAST-LIO / lidar-nav / 别的库 │
-│  （它们完全不知道 dorabag 的存在） │
+│  （它们完全不知道 doracap 的存在） │
 └─────────────────────────────┘
 ```
 
 关键点：
 
-- **依赖方向单向、无环**：`dorabag` 谁都不依赖；`glue` 依赖 `dorabag` + `fast-lio`；
-  `fast-lio` 不依赖 dorabag。
-- **dorabag 可以被任何库复用**，不只 FAST-LIO。
+- **依赖方向单向、无环**：`doracap` 谁都不依赖；`glue` 依赖 `doracap` + `fast-lio`；
+  `fast-lio` 不依赖 doracap。
+- **doracap 可以被任何库复用**，不只 FAST-LIO。
 - **换库的成本**：只在对方项目里写一个新 glue（一个 `DataSource` 适配器 + 消息序列化），
-  dorabag 内核一行不改。
+  doracap 内核一行不改。
 
 ---
 
-## 4. “满足 dorabag 要求”的契约（调用方必须提供的四样东西）
+## 4. “满足 doracap 要求”的契约（调用方必须提供的四样东西）
 
-这是 dorabag 对使用者提出的**最小要求**，也是“不管用什么建图导航系统，都能用”的判据：
+这是 doracap 对使用者提出的**最小要求**，也是“不管用什么建图导航系统，都能用”的判据：
 
 1. **给每条消息一个主题名（channel）**——例如 `imu`、`lidar`、`odom`、`pose`。
-2. **给每条消息一个单调递增的时间戳（stamp）**——dorabag 用它来排序和安排回放节奏。
+2. **给每条消息一个单调递增的时间戳（stamp）**——doracap 用它来排序和安排回放节奏。
 3. **给每条消息一种字节表示**——由调用方定义（serde/自定义二进制/CDR/……），并注册一个
    编码与解码手段。
 4. **（推荐）提供一份 schema 描述**——类型名、编码方式、可选字段表；用于 `info`/工具自省。
-   即使不提供，dorabag 也能按“不透明字节”录制与回放，只是工具无法自动解析内容。
+   即使不提供，doracap 也能按“不透明字节”录制与回放，只是工具无法自动解析内容。
 
-反过来说：**只要满足了这四样，任何库都能被 dorabag 录制和回放**。这正是你想要的“解耦”。
+反过来说：**只要满足了这四样，任何库都能被 doracap 录制和回放**。这正是你想要的“解耦”。
 
 ### 4.1 时间戳的归属（很重要）
 
@@ -118,19 +118,19 @@ pub struct Message<'a> {
 - 别家：可能用 header 的 `sec/nsec`、也可能是点在消息体里的 `offset_time`；
 - 单个消息内部可能还有“次一级时间戳”（如激光点相对当前帧的 `offset_time`）。
 
-dorabag **不猜**这些。它在**写入时**由调用方告诉它“调度这条消息用哪个时间”；在**播放时**按这个
-时间调度。至于消息体里还带不带一个 header、header 里是什么、逐点时间怎么用——dorabag 不关心，
-只当成字节。**这样既保真（逐点时间原样在字节里），又不耦合（dorabag 不解析它）。**
+doracap **不猜**这些。它在**写入时**由调用方告诉它“调度这条消息用哪个时间”；在**播放时**按这个
+时间调度。至于消息体里还带不带一个 header、header 里是什么、逐点时间怎么用——doracap 不关心，
+只当成字节。**这样既保真（逐点时间原样在字节里），又不耦合（doracap 不解析它）。**
 
-> 注意：这里有个取舍——如果将来想实现“按 header 里内嵌时间去同步/重采样”，就需要 dorabag 能
+> 注意：这里有个取舍——如果将来想实现“按 header 里内嵌时间去同步/重采样”，就需要 doracap 能
 > 从字节里读出时间，那会引入“特定 header 约定”。建议作为**可选扩展**，而不是默认契约，
 > 以保住解耦。
 
 ---
 
-## 5. 时间轴 / 时钟引擎（dorabag 的核心职责之一）
+## 5. 时间轴 / 时钟引擎（doracap 的核心职责之一）
 
-dorabag 不发布 `/clock`，也不强制“模拟时间”，但它**天生要负责按时间戳给消费者安排节奏**。这是它
+doracap 不发布 `/clock`，也不强制“模拟时间”，但它**天生要负责按时间戳给消费者安排节奏**。这是它
 存在的意义，也是通用部分。
 
 ### 5.1 时间戳表示
@@ -152,32 +152,32 @@ dorabag 不发布 `/clock`，也不强制“模拟时间”，但它**天生要�
 
 ### 5.3 是否需要“时钟源”？
 
-FAST-LIO 自己用 `stamp`，不需要外部时钟；但**别家系统可能需要“当前回放时间”**。建议 dorabag 提供
+FAST-LIO 自己用 `stamp`，不需要外部时钟；但**别家系统可能需要“当前回放时间”**。建议 doracap 提供
 一个**可选**的 `PlaybackClock`（返回当前回放进度），消费者想用就用；这是附加能力，**不是核心契约**，
 不会因为一个库不想要而被强加。
 
 ---
 
-## 6. 存储格式：单一 `.rbag` 文件（自描述 + 可插拔）
+## 6. 存储格式：单一 `.dcap` 文件（自描述 + 可插拔）
 
 > **最终目标（单文件原则）**：一切（schema 注册表、所有频道/消息、索引、场景元数据、压缩）都录进
-> **一个 `.rbag` 文件**。回放时读取该文件，即可直接交给独立 RViz 类工具进行可视化回放。
+> **一个 `.dcap` 文件**。回放时读取该文件，即可直接交给独立 RViz 类工具进行可视化回放。
 >
-> `.rbag` = 单一自描述、可 seek、可压缩的自包含文件；建议底层用 MCAP（本就是单文件、自描述、
-> 分块、带索引、可压缩），dorabag 在其上叠加 `.rbag` 语义与规范消息。
+> `.dcap` = 单一自描述、可 seek、可压缩的自包含文件；建议底层用 MCAP（本就是单文件、自描述、
+> 分块、带索引、可压缩），doracap 在其上叠加 `.dcap` 语义与规范消息。
 
-因为 dorabag 不认识领域类型，它**必须自描述**才能在“不知道调用方类型”的情况下被别人用工具打开。
+因为 doracap 不认识领域类型，它**必须自描述**才能在“不知道调用方类型”的情况下被别人用工具打开。
 
 ### 6.0 单文件原则（最终目标）
 
-- **一个 `.rbag` = 一份完整录制**：schema 注册表 + 频道/主题清单 + 消息 + chunk 索引 + 场景元数据
+- **一个 `.dcap` = 一份完整录制**：schema 注册表 + 频道/主题清单 + 消息 + chunk 索引 + 场景元数据
   + 压缩，全部在**一个文件**内，便于分发、备份、seek。
-- **回放端**：读 `some.rbag` → 还原四元组流与元数据 → 交给独立 viz 工具渲染。
+- **回放端**：读 `some.dcap` → 还原四元组流与元数据 → 交给独立 viz 工具渲染。
 - **首选实现**：MCAP（单文件、自描述、带 schema 与索引、zstd/lz4 压缩、可与 ROS2/Foxglove 互通）；
-  dorabag 在其上叠加 `.rbag` 文件头语义（profile = `"dorabag"`、library = 工具版本、规范型约定）。
+  doracap 在其上叠加 `.dcap` 文件头语义（profile = `"doracap"`、library = 工具版本、规范型约定）。
 - **可选后端**：sqlite3、自定义 chunked 等；凡能产出“单文件”均可接入，核心只依赖 `storage` 插件接口。
 
-> **澄清：rosbag2 的形态 ≠ dorabag 的单文件 `.rbag`。**
+> **澄清：rosbag2 的形态 ≠ doracap 的单文件 `.dcap`。**
 >
 > - `rosbag2` 的“录制”是一份**目录**：`metadata.yaml` + 一个或多个 `.mcap`（或 `.db3`）数据文件
 >   （`relative_file_paths` 可多个，分卷）。`metadata.yaml` 记录版本、storage 类型、文件列表、
@@ -186,9 +186,9 @@ FAST-LIO 自己用 `stamp`，不需要外部时钟；但**别家系统可能需�
 >   `sqlite3` = 真正的 SQLite 数据库（`.db3`，含 `topics`/`messages` 表）；
 >   `mcap` = 自定义二进制容器（单文件，含 header/schema/channel/message/chunk/index/metadata）。
 >   rosbag2 默认早期为 `sqlite3`，**Iron 起改为 `mcap`**。
-> - dorabag 的 `.rbag` 用的是 MCAP 的“**单文件自包含**”能力：把主题列表、时间范围、场景元数据
->   放进 MCAP 自己的 `header`(profile=`"dorabag"`)、`metadata`、`statistics` 记录，
->   **不需要 sidecar `metadata.yaml`**。因此 `.rbag` 是一个真正的单一文件，比 rosbag2 的目录式更紧凑。
+> - doracap 的 `.dcap` 用的是 MCAP 的“**单文件自包含**”能力：把主题列表、时间范围、场景元数据
+>   放进 MCAP 自己的 `header`(profile=`"doracap"`)、`metadata`、`statistics` 记录，
+>   **不需要 sidecar `metadata.yaml`**。因此 `.dcap` 是一个真正的单一文件，比 rosbag2 的目录式更紧凑。
 
 ### 6.1 容器需要记录
 
@@ -199,10 +199,10 @@ FAST-LIO 自己用 `stamp`，不需要外部时钟；但**别家系统可能需�
 
 ### 6.2 存储后端做成插件
 
-- **默认：`storage-mcap`（即单文件 `.rbag`）**。MCAP 本身是自描述、分块、带 schema 注册表与索引的
+- **默认：`storage-mcap`（即单文件 `.dcap`）**。MCAP 本身是自描述、分块、带 schema 注册表与索引的
   跨语言**单文件**容器，已经被
-  ROS2 rosbag2、Foxglove Studio、PlotJuggler 广泛采用。dorabag 采用它能：
-  - **一个文件就装下全部录制**（契合“单文件 `.rbag`”目标）；
+  ROS2 rosbag2、Foxglove Studio、PlotJuggler 广泛采用。doracap 采用它能：
+  - **一个文件就装下全部录制**（契合“单文件 `.dcap`”目标）；
   - 与既有 ROS2 bag / 可视化工具**互通**；
   - 不用重造“自描述 + 索引”轮子；
   - 未来可直接读现成的 ROS bag 数据集。
@@ -213,12 +213,12 @@ FAST-LIO 自己用 `stamp`，不需要外部时钟；但**别家系统可能需�
 
 - 默认支持 `serde`（bincode/postcard 等紧凑编码）；也允许调用方用任意自定义编码
   （如 DDS CDR、vendor 二进制）。
-- codec 是**调用方在接入时提供**的，dorabag 只是“存字节 + 记编码标识”，不做解码。
+- codec 是**调用方在接入时提供**的，doracap 只是“存字节 + 记编码标识”，不做解码。
 
 ### 6.4 为什么这样不会“损伤保真”
 
-FAST-LIO 关心的逐点时间（Avia `offset_time`、Standard `time`）都在消息字节里；dorabag 把它们
-当作 opaque 字节存起来，回放时原样吐回。**语义/单位/换算完全由 FAST-LIO 自己解释**，dorabag 不求甚解，
+FAST-LIO 关心的逐点时间（Avia `offset_time`、Standard `time`）都在消息字节里；doracap 把它们
+当作 opaque 字节存起来，回放时原样吐回。**语义/单位/换算完全由 FAST-LIO 自己解释**，doracap 不求甚解，
 也就不会因为“不认识”而丢字段。
 
 ---
@@ -228,21 +228,21 @@ FAST-LIO 关心的逐点时间（Avia `offset_time`、Standard `time`）都在�
 | 方面 | 负责方 |
 |---|---|
 | 主题名、所属频道 | 调用方在写入时指定 |
-| 调度时间戳（单调、单位） | 调用方提供，dorabag 只负责排序/调度 |
+| 调度时间戳（单调、单位） | 调用方提供，doracap 只负责排序/调度 |
 | 消息字节表示（序列化） | 调用方（serde / 自定义编码） |
-| 逐点时间、单位换算、帧内语义 | **调用方**（dorabag 存字节，不解码） |
-| 容器/索引/压缩/seek/速率/循环 | **dorabag** |
-| 类型/单位自省（info/工具） | dorabag 用 schema 元数据，调用方提供 schema |
+| 逐点时间、单位换算、帧内语义 | **调用方**（doracap 存字节，不解码） |
+| 容器/索引/压缩/seek/速率/循环 | **doracap** |
+| 类型/单位自省（info/工具） | doracap 用 schema 元数据，调用方提供 schema |
 
 ---
 
-## 8. 接入 FAST-LIO：薄胶水层（不进入 dorabag）
+## 8. 接入 FAST-LIO：薄胶水层（不进入 doracap）
 
-FAST-LIO 想用 dorabag，只做两件事，且**都在 FAST-LIO 侧的 glue 里**：
+FAST-LIO 想用 doracap，只做两件事，且**都在 FAST-LIO 侧的 glue 里**：
 
 ### 8.1 录制端（Record）
 
-把现有的 `DataSource` 输出流（`SimSource` / `LivoxSource` / 未来驱动）序列化成字节并写入 dorabag：
+把现有的 `DataSource` 输出流（`SimSource` / `LivoxSource` / 未来驱动）序列化成字节并写入 doracap：
 
 ```rust
 // 在 FAST-LIO 侧定义“如何把 SensorData 编码成字节 + 取时间戳”
@@ -257,79 +257,79 @@ fn encode(s: &SensorData) -> (channel, stamp, Schema, Vec<u8>) {
 
 ### 8.2 回放端（Play）
 
-dorabag 把字节吐出来，胶水层解码并把它们喂回 FAST-LIO 自己的 `DataSource`：
+doracap 把字节吐出来，胶水层解码并把它们喂回 FAST-LIO 自己的 `DataSource`：
 
 ```rust
 impl DataSource for BagSource {
     fn next(&mut self) -> Option<SensorData> {
-        // 从 dorabag 的 play 流读到一条 Message，再 decode 成 SensorData
+        // 从 doracap 的 play 流读到一条 Message，再 decode 成 SensorData
         self.play.next_message().map(decode)
     }
     fn try_next(&mut self) -> Result<Option<SensorData>, NonBlocking> {
-        // 对应 dorabag 的非阻塞读
+        // 对应 doracap 的非阻塞读
     }
 }
 ```
 
 **FAST-LIO 核心库一行不改**，因为它依然在面对它的 `DataSource`；只是这次 `DataSource` 的底层来源
-从“硬件/模拟”变成了“dorabag 回放”。这一点与现在的 `SimSource` / `LivoxSource` 完全平级。
+从“硬件/模拟”变成了“doracap 回放”。这一点与现在的 `SimSource` / `LivoxSource` 完全平级。
 
 ---
 
 ## 9. 仓库 / CRATE 结构
 
-### 9.1 dorabag：独立的通用库（自己一个仓库）
+### 9.1 doracap：独立的通用库（自己一个仓库）
 
 ```
-dorabag/                       # 独立 repo，crates.io 可发布
+doracap/                       # 独立 repo，crates.io 可发布
   core/        # 容器 + 索引 + 时间调度引擎 + schema（不依赖任何领域库）
-  storage-mcap/    # 单文件稳定格式（默认；产出 .rbag）
+  storage-mcap/    # 单文件稳定格式（默认；产出 .dcap）
   storage-custom/  # 可选：sqlite3 / 自定义 chunked 单文件
   codec-serde/     # 可选：serde(bincode/postcard) codec
-  cli/         # 命令：record / play / info / convert / reindex（产物为 .rbag 单文件）
+  cli/         # 命令：record / play / info / convert / reindex（产物为 .dcap 单文件）
 ```
 
-dorabag 对外的依赖都是**通用**的：`serde`、容器/索引相关、`chrono`/`std::time`，以及可选 codec 插件。
-**没有任何** LiDAR / IMU / SLAM / 导航依赖。最终产物是**一个 `.rbag` 单文件**，
+doracap 对外的依赖都是**通用**的：`serde`、容器/索引相关、`chrono`/`std::time`，以及可选 codec 插件。
+**没有任何** LiDAR / IMU / SLAM / 导航依赖。最终产物是**一个 `.dcap` 单文件**，
 回放时可直接交给独立 RViz 类工具。
 
 ### 9.2 FAST-LIO 侧：薄胶水 crate
 
-在 FAST-LIO **workspace** 里新增一个很小的 crate（如 `crates/dorabag-fastlio`），依赖
-`dorabag`（path/git）+ `fast-lio`，只做“bytes ⇄ SensorData + 时间戳提取 + DataSource 包装”。
-两全其美：**dorabag 保持通用，FAST-LIO 用户零改动地接入。**
+在 FAST-LIO **workspace** 里新增一个很小的 crate（如 `crates/doracap-fastlio`），依赖
+`doracap`（path/git）+ `fast-lio`，只做“bytes ⇄ SensorData + 时间戳提取 + DataSource 包装”。
+两全其美：**doracap 保持通用，FAST-LIO 用户零改动地接入。**
 
 ```
 fast-lio workspace/
   crates/fast-lio/
   crates/fast-lio-driver/
-  crates/dorabag-fastlio/     # 新增：胶水，仅此 crate 同时了解 dorabag 与 fast-lio
+  crates/doracap-fastlio/     # 新增：胶水，仅此 crate 同时了解 doracap 与 fast-lio
   crates/fast-lio-app/
   crates/nav-app/
 ```
 
 ---
 
-## 10. 与 ROS 原生 rosbag 的对比，以及 dorabag 的“通用契约”清单
+## 10. 与 ROS 原生 rosbag 的对比，以及 doracap 的“通用契约”清单
 
-dorabag 复用了 ROS rosbag 的“通用内核”思想，但把 ROS 特有的部分砍掉：
+doracap 复用了 ROS rosbag 的“通用内核”思想，但把 ROS 特有的部分砍掉：
 
-| ROS 概念 | dorabag 处理方式 |
+| ROS 概念 | doracap 处理方式 |
 |---|---|
 | 消息类型系统 | 不内置；用“字节 + schema”自描述，调用方负责解码 |
-| Topics | 保留为 `channel`（字符串），dorabag 不解析语义 |
+| Topics | 保留为 `channel`（字符串），doracap 不解析语义 |
 | `/clock` / `use_sim_time` | 不内置；timestamps 由调用方提供；可选的 `PlaybackClock` 供需要者用 |
 | QoS / DDS | 无；不涉及 |
 | TF / tf_static | 不关心；是“字节里的位姿数据”，调用方解释 |
-| 逐点/消息内时间 | dorabag 存字节，逐点时间原样保留，由调用方解释 |
-| record / play / info | dorabag 提供（通用） |
-| chunk + index / seek | dorabag 提供 |
-| 压缩（zstd/lz4） | dorabag 提供，作用于 chunk |
+| 逐点/消息内时间 | doracap 存字节，逐点时间原样保留，由调用方解释 |
+| record / play / info | doracap 提供（通用） |
+| chunk + index / seek | doracap 提供 |
+| 压缩（zstd/lz4） | doracap 提供，作用于 chunk |
 
 ### “满足要求即可用”的判据（一句话）
 
 > 只要你能给每条消息一个主题名、一个单调递增时间戳、一份字节表示和一份（可选的）schema，
-> dorabag 就能录制、回放、seek、循环、变速，不管你后面跑的是 FAST-LIO、Cartographer、
+> doracap 就能录制、回放、seek、循环、变速，不管你后面跑的是 FAST-LIO、Cartographer、
 > Odom、还是纯导航。
 
 ---
@@ -337,16 +337,16 @@ dorabag 复用了 ROS rosbag 的“通用内核”思想，但把 ROS 特有的�
 ## 11. 里程碑（建议实现顺序：先 P0，ROS 兼容整体后置）
 
 > 决策已定：**当前不做 ROS/ROS2 兼容**（无必须直接回放的存量 ROS 数据）。先做 P0 核心主链路；
-> `dorabag-ros` 作为“后置可选层”保留设计，仅在 §15.5 触发信号出现时再启动。
+> `doracap-ros` 作为“后置可选层”保留设计，仅在 §15.5 触发信号出现时再启动。
 
-1. **内核**：定义 `Message`/`Timestamp`/`Schema`/`Registry`；单文件 `.rbag` 容器（chunk + index + 压缩）。
-2. **`storage-mcap`**：用 MCAP 产出**单文件 `.rbag`**（内容 = `dorabag-msgs` 规范消息 + compact 编码，
-   非 CDR；profile=`"dorabag"`）。
-3. **`dorabag-msgs`**：`PointCloud` / `TransformStamped` / `PoseStamped` / `Header` / `Time`
+1. **内核**：定义 `Message`/`Timestamp`/`Schema`/`Registry`；单文件 `.dcap` 容器（chunk + index + 压缩）。
+2. **`storage-mcap`**：用 MCAP 产出**单文件 `.dcap`**（内容 = `doracap-msgs` 规范消息 + compact 编码，
+   非 CDR；profile=`"doracap"`）。
+3. **`doracap-msgs`**：`PointCloud` / `TransformStamped` / `PoseStamped` / `Header` / `Time`
    共享类型 + 文档化字节布局。
-4. **record**：从任意 `DataSource` 流式写入，产出**一个 `.rbag` 单文件**。
-5. **play**：时间调度引擎（rate/loop/seek/非阻塞），读取 `.rbag` 喂给消费方 / 独立 viz。
-6. **工具**：`info` / `convert` / `reindex`；`dorabag-fastlio` glue 接入 FAST-LIO。
+4. **record**：从任意 `DataSource` 流式写入，产出**一个 `.dcap` 单文件**。
+5. **play**：时间调度引擎（rate/loop/seek/非阻塞），读取 `.dcap` 喂给消费方 / 独立 viz。
+6. **工具**：`info` / `convert` / `reindex`；`doracap-fastlio` glue 接入 FAST-LIO。
 7. **（后置 / 可选）** 读 ROS2 mcap / ROS1 `.bag`、写回 MCAP；仅在触发信号出现时启动。
 
 ---
@@ -356,14 +356,14 @@ dorabag 复用了 ROS rosbag 的“通用内核”思想，但把 ROS 特有的�
 > **状态：后置 / 可选。** 当前决策为“不做”，本节作为已论证的**将来可启用设计**保留；
 > 仅当 §15.5 的触发信号出现时才启动实施。
 
-### 12.1 结论：兼容很值，但要做成“可选兼容层”，不进 dorabag 核心
+### 12.1 结论：兼容很值，但要做成“可选兼容层”，不进 doracap 核心
 
 “兼容 rosbag”讲的是**与 ROS 的“容器格式 + 消息格式”互通**，这属于“传输/容器”层的问题，与
-“是不是某家建图导航库”**正交**。所以它**不会破坏 dorabag 的通用性**，只要把它做成核心之外的
+“是不是某家建图导航库”**正交**。所以它**不会破坏 doracap 的通用性**，只要把它做成核心之外的
 可选模块即可：
 
 ```
-dorabag(核心, 通用四元组)
+doracap(核心, 通用四元组)
   ├─ storage-mcap         ← ROS2 rosbag2 现在常用 MCAP，天然互通
   ├─ storage-sqlite3      ← 读取旧版 ROS2 rosbag2
   ├─ storage-rosbag1      ← 读取 ROS1 经典 .bag
@@ -373,7 +373,7 @@ dorabag(核心, 通用四元组)
 ```
 
 核心依然不认识 `sensor_msgs/Imu` / `livox_ros_driver/CustomMsg`；这些“认识”都集中在
-`dorabag-ros` 这一层。
+`doracap-ros` 这一层。
 
 ### 12.2 “兼容 rosbag”要分三层，别一锅端
 
@@ -383,23 +383,23 @@ dorabag(核心, 通用四元组)
 | **消息兼容** | 能按 ROS 的消息 schema 解码/编码字节（CDR / ROS1 序列化） | 高 | ✅ 核心瓶颈 |
 | **语义兼容** | 把 ROS 主题/消息映射到消费方的数据模型（如 FAST-LIO 的 `SensorData`），处理时间单位、点云字段 | 中 | 由 glue 负责 |
 
-建议：**存储兼容 + 消息兼容**做进 `dorabag-ros` 层；**语义兼容**继续留在 FAST-LIO 的 glue 里，
+建议：**存储兼容 + 消息兼容**做进 `doracap-ros` 层；**语义兼容**继续留在 FAST-LIO 的 glue 里，
 核心保持不带任何方向性。
 
 ### 12.3 为什么 MCAP 是关键桥梁
 
 - ROS2 rosbag2（Iron 之后）默认存储就是 **MCAP**：自描述、带 schema 注册表、chunk + 索引、支持压缩。
-- dorabag 核心**默认就用 storage-mcap**，于是“读 ROS2 MCAP bag”几乎白拿——只需再补一个
+- doracap 核心**默认就用 storage-mcap**，于是“读 ROS2 MCAP bag”几乎白拿——只需再补一个
   **CDR codec** 和**类型描述**即可。
 - 读旧版 ROS2 的 sqlite3 `.db3`：解析三个表（topics / messages / metadata）即可，CDR 解码共用同一套 codec。
 - 读 ROS1 经典 `.bag`：需要解析 chunk/connection/index 记录 + ROS1 消息序列化。这是最大的一块独立工作。
 
-> **写回**：如果要让 Foxglove / `ros2 bag play` 打开 dorabag 的录制，用 MCAP + CDR 就能直接对上；
+> **写回**：如果要让 Foxglove / `ros2 bag play` 打开 doracap 的录制，用 MCAP + CDR 就能直接对上；
 > 若要写回 ROS1 `.bag`，工作量更高，建议**只做读、暂不做写**。
 
 ### 12.4 最大的难点：消息解码（一个 schema 注册表就能兜住常规做法）
 
-真正的“难”来自消息层，因为 dorabag 不认识 ROS 消息。正确做法是：**用 dorabag 的 `Schema`
+真正的“难”来自消息层，因为 doracap 不认识 ROS 消息。正确做法是：**用 doracap 的 `Schema`
 承载 ROS 的类型元数据**，再配合**手写解码器**处理少数常用消息类型：
 
 ```rust
@@ -433,7 +433,7 @@ pub struct Schema {
 - `rosbag play` 的调度基准是 **header `stamp`**（无 header 才退回记录时间）。
 - ROS2 MCAP 额外存了 `log_time` 和 `publish_time`；真正的语义时间仍在消息 payload / header 里。
 
-所以 dorabag 需要给每个频道一个 **`time_policy`**：
+所以 doracap 需要给每个频道一个 **`time_policy`**：
 
 ```rust
 enum TimePolicy {
@@ -443,7 +443,7 @@ enum TimePolicy {
 }
 ```
 
-这会让“时间提取”稍微侵入消息字节（读 header 需知道类型），因此这个逻辑放在 dorabag-ros / codec
+这会让“时间提取”稍微侵入消息字节（读 header 需知道类型），因此这个逻辑放在 doracap-ros / codec
 里，**核心只管拿到的调度时间戳**，保持四元组抽象不变。
 
 ### 12.6 `tf` / `tf_static` 等话题
@@ -459,24 +459,24 @@ enum TimePolicy {
 4. `codec-ros1` + `storage-rosbag1` 读经典 ROS1 数据集（FAST-LIO 很多老数据集是 ROS1 Livox CustomMsg）。
 5. （暂缓）写回 ROS1 `.bag`；MCAP + CDR 的写回已能对接 Foxglove / `ros2 bag play`。
 
-> 一句话：**核心依然通用；`dorabag-ros` 这一层负责把 ROS 的“容器 + 消息”翻译成 dorabag 的
+> 一句话：**核心依然通用；`doracap-ros` 这一层负责把 ROS 的“容器 + 消息”翻译成 doracap 的
 > 四元组；语义映射留在消费方的 glue。** 这样既拿到 rosbag 时代的存量数据，又不破坏
 > “不绑定建图/导航库”的初衷。
 
 ---
 
-## 13. dorabag-ros 实现细节（字节级拆解）
+## 13. doracap-ros 实现细节（字节级拆解）
 
-> **状态：后置 / 可选设计参考。** 本节是 `dorabag-ros` 将来实现时的字节级蓝图，供按需启用；
+> **状态：后置 / 可选设计参考。** 本节是 `doracap-ros` 将来实现时的字节级蓝图，供按需启用；
 > 当前不实现（§11 决策）。
 
-> dorabag-ros 的职责一句话：**把“ROS 世界的容器 + 消息”翻译成 dorabag 的四元组
+> doracap-ros 的职责一句话：**把“ROS 世界的容器 + 消息”翻译成 doracap 的四元组
 > `(channel, stamp, schema, bytes)`，再交给消费方解。** 内部按“存储层 → 消息层 → 解码层 →
 > 时间层”四段做。
 
 ### 13.1 存储层：三种容器适配器
 
-dorabag 用 `storage` 插件抽象，三种后端对应 ROS 的三种文件。
+doracap 用 `storage` 插件抽象，三种后端对应 ROS 的三种文件。
 
 #### MCAP（ROS2 现行默认）
 
@@ -498,7 +498,7 @@ opcode: header=01 footer=02 schema=03 channel=04 message=05 chunk=06
   `compression:str` `len_records:u64` `records(=压缩字典)`
 
 对 ROS2：`schema.encoding = "ros2msg"`（或 `"ros2idl"`），`schema.data` = 完整 `.msg` 文本；
-`channel.message_encoding = "cdr"`；`message.data` = CDR 字节。因此 **dorabag-ros 复用核心的
+`channel.message_encoding = "cdr"`；`message.data` = CDR 字节。因此 **doracap-ros 复用核心的
 `storage-mcap` 就能直接读 ROS2 MCAP**。
 
 #### sqlite3（旧版 ROS2 默认）
@@ -556,7 +556,7 @@ header = 若干 <field_len:u32><field_name>=<field_value>   // '=' 分隔；fiel
   定长数组无前缀。
 - 与 CDR 关键区别：ROS1 **无封装头、无对齐**。
 
-#### Schema 元数据装进 dorabag 的 `Schema`
+#### Schema 元数据装进 doracap 的 `Schema`
 
 ```rust
 pub struct Schema {
@@ -599,7 +599,7 @@ datatype: 1=i8 2=u8 3=i16 4=u16 5=i32 6=u32 7=f32 8=f64
 
 1. 按 `fields` 的 `name` 找到 `x/y/z/intensity/time/ring` 的 `offset` 与 `datatype`；
 2. `data` 按 `point_step` 切成 `width*height` 个点，从对应 `offset` 读字段；
-3. `time` 的单位随数据来源（秒/毫秒），由消费方/配置定 `timestamp_unit`，dorabag-ros 只带出字段；
+3. `time` 的单位随数据来源（秒/毫秒），由消费方/配置定 `timestamp_unit`，doracap-ros 只带出字段；
 4. 输出 `StdPointMsg { x,y,z,intensity,time,ring }`。
 
 > `PointCloud2` **没有“动态点结构”**，布局全靠 `fields+point_step` 描述，天然可跨 ROS1/ROS2
@@ -627,7 +627,7 @@ CustomPoint = { offset_time:u32, x,y,z:f32, reflectivity:u8, tag:u8, line:u8 }
 - 一个消息有**两个**时间：记录时间（MCAP `log_time`/`publish_time`、sqlite3 `timestamp`、
   rosbag 记录 `time`）和消息内 **header `stamp`**。
 - **`rosbag play` 的调度基准是 header `stamp`**（无 header 才退回记录时间）。
-- 因此 dorabag-ros 给每个频道设 `time_policy`：
+- 因此 doracap-ros 给每个频道设 `time_policy`：
 
 ```rust
 enum TimePolicy {
@@ -637,7 +637,7 @@ enum TimePolicy {
 }
 ```
 
-- 只有 `HeaderStamp` 需要“从 payload 头部解 header”，这只在 dorabag-ros 做；dorabag 核心依然只拿到
+- 只有 `HeaderStamp` 需要“从 payload 头部解 header”，这只在 doracap-ros 做；doracap 核心依然只拿到
   一个调度 `Timestamp`，四元组抽象不变。
 - 默认 `HeaderStamp`；对 `PointCloud2`/`Imu`/`CustomMsg`，header `stamp` 就是传感器时刻。
 
@@ -647,7 +647,7 @@ enum TimePolicy {
 读取端：
   storage 插件(mcap/sqlite3/rosbag1)        → (channel, log_time, publish_time, raw_bytes, schema)
   → 按 TimePolicy 取调度 timestamp
-  → 组装成 dorabag::Message {channel, stamp, schema, payload}
+  → 组装成 doracap::Message {channel, stamp, schema, payload}
   → 时间调度引擎(rate/loop/seek)
   → 消费方 glue 调 decoder(Imu/PointCloud2/CustomMsg) → SensorData
   → 包装成 fast_lio::DataSource
@@ -670,7 +670,7 @@ enum TimePolicy {
 ### 13.7 模块 / API 草案
 
 ```rust
-// dorabag-ros
+// doracap-ros
 pub mod storage { pub mod mcap; pub mod sqlite3; pub mod rosbag1; }
 pub mod codec   { pub mod cdr; pub mod ros1; }
 pub mod decode  { pub mod header; pub mod imu; pub mod pointcloud2; pub mod livox; }
@@ -689,27 +689,27 @@ pub trait MsgDecoder<T> {
 依赖关系（单向、无环）：
 
 ```
-dorabag(core)          ← 无领域类型
-dorabag-ros            ← 只依赖核心 + 容器/编解码，不依赖任何建图库
-dorabag-fastlio(glue)  ← 依赖 dorabag-ros + fast-lio，做 SensorData⇄解码结果 + DataSource 包装
+doracap(core)          ← 无领域类型
+doracap-ros            ← 只依赖核心 + 容器/编解码，不依赖任何建图库
+doracap-fastlio(glue)  ← 依赖 doracap-ros + fast-lio，做 SensorData⇄解码结果 + DataSource 包装
 ```
 
 ### 13.8 小结
 
 可行实现 = **三种存储适配器（MCAP/sqlite3/ROS1 `.bag`）+ 两种消息编解码（CDR/ROS1）+
 手写四类建图消息解码（Header/Imu/PointCloud2/Livox CustomMsg）+ 默认 `HeaderStamp` 的时间策略**。
-它不碰 FAST-LIO，只把“ROS 的字节 + 元数据”翻译成 dorabag 的四元组；语义映射留给消费方 glue。
+它不碰 FAST-LIO，只把“ROS 的字节 + 元数据”翻译成 doracap 的四元组；语义映射留给消费方 glue。
 最大工作量在 **CDR/ROS1 字段级解码与对齐**，最大坑在 **`log_time` vs `header.stamp` 的时间语义**。
 
 ---
 
-## 14. dorabag-msgs：规范消息清单设计
+## 14. doracap-msgs：规范消息清单设计
 
 > 目标：给外部「RViz 类可视化工具」提供**可保证被解码**的数据。viz 工具不需要认识任何来源库，
-> 只要认识 dorabag 的**规范消息**。这相当于 ROS 定义 `sensor_msgs/PointCloud2`。
+> 只要认识 doracap 的**规范消息**。这相当于 ROS 定义 `sensor_msgs/PointCloud2`。
 >
-> dorabag-msgs = **一套规范消息（词汇表）+ 一份 schema 源（`.rsm`）+ 一个文档化 wire 编码**。
-> dorabag 核心仍只存 `(channel, stamp, schema, bytes)`，规范层在它之上，不破坏类型无关。
+> doracap-msgs = **一套规范消息（词汇表）+ 一份 schema 源（`.rsm`）+ 一个文档化 wire 编码**。
+> doracap 核心仍只存 `(channel, stamp, schema, bytes)`，规范层在它之上，不破坏类型无关。
 
 ### 14.1 四个设计问题与选择
 
@@ -735,15 +735,15 @@ dorabag-fastlio(glue)  ← 依赖 dorabag-ros + fast-lio，做 SensorData⇄解�
 
 | 规范名 | 用途 | 关键字段 |
 |---|---|---|
-| `dorabag/PointCloud` | 3D 点云（核心） | header、fields[]、point_step、data 缓冲 |
-| `dorabag/Imu` | IMU 惯导（录制 / 离线里程计 / 回放） | header、lin_acc、ang_vel、各 covariance |
-| `dorabag/TransformStamped` | 坐标系变换（TF） | stamp、frame_a、frame_b、pos、quat |
-| `dorabag/PoseStamped` | 时间戳位姿（轨迹） | stamp、frame_id、pos、quat |
-| `dorabag/Path` | 位姿序列（轨迹） | header、poses[] |
-| `dorabag/Image` | 相机（可选） | header、编码、分辨率、data |
-| `dorabag/OccupancyGrid` | 2D 栅格（导航） | header、resolution、data |
-| `dorabag/Marker` | 任意标注（可选） | 类型、位姿、颜色、几何 |
-| `dorabag/Clock` | 模拟时间（可选） | sec/nsec |
+| `doracap/PointCloud` | 3D 点云（核心） | header、fields[]、point_step、data 缓冲 |
+| `doracap/Imu` | IMU 惯导（录制 / 离线里程计 / 回放） | header、lin_acc、ang_vel、各 covariance |
+| `doracap/TransformStamped` | 坐标系变换（TF） | stamp、frame_a、frame_b、pos、quat |
+| `doracap/PoseStamped` | 时间戳位姿（轨迹） | stamp、frame_id、pos、quat |
+| `doracap/Path` | 位姿序列（轨迹） | header、poses[] |
+| `doracap/Image` | 相机（可选） | header、编码、分辨率、data |
+| `doracap/OccupancyGrid` | 2D 栅格（导航） | header、resolution、data |
+| `doracap/Marker` | 任意标注（可选） | 类型、位姿、颜色、几何 |
+| `doracap/Clock` | 模拟时间（可选） | sec/nsec |
 
 对“3D 激光雷达实时回放”，**至少需要 `PointCloud` + `TransformStamped`/`PoseStamped`**。
 点云必须带 `frame_id` 和逐点时间，Transform 用于把点云从 sensor 帧放进世界系。
@@ -751,7 +751,7 @@ dorabag-fastlio(glue)  ← 依赖 dorabag-ros + fast-lio，做 SensorData⇄解�
 ### 14.4 契约形式：不做 `.rsm`，用“共享 Rust 类型 + 文档化字节布局”
 
 `.rsm` 只是“单一事实来源 + 跨语言 codegen”这个目标的一种手段，不是必要条件。真正必要的是：
-**一个 dorabag 与 viz 工具都认同的、文档化、版本化的“字节契约”**，外加四元组里 `Schema` 携带的
+**一个 doracap 与 viz 工具都认同的、文档化、版本化的“字节契约”**，外加四元组里 `Schema` 携带的
 type 名 / encoding。
 
 要点：
@@ -759,7 +759,7 @@ type 名 / encoding。
 - **`Schema`（元数据）必要，但只需 `type_name` + `encoding`**，让 viz 选对解码器；不需要一份 `.rsm` 文件。
 - **点云本身自描述**：`PointCloud` 的字段布局在 payload 内的 `fields[]`，外部工具读消息体即可，
   无需外部 schema。
-- **若 viz 也是 Rust**：dorabag 与 viz 直接共用 `dorabag-msgs` crate，**crate 即契约**；
+- **若 viz 也是 Rust**：doracap 与 viz 直接共用 `doracap-msgs` crate，**crate 即契约**；
   `.rsm`/codegen 是纯开销。
 - **契约源头** = Rust 结构体 + codec 实现 + 一份人写的字节布局规范（spec doc）；可加一个
   “把类型渲染成规范文本”的轻量宏，防止 doc 与代码 drift（这是轻量 codegen，不是 `.rsm` 语言）。
@@ -784,7 +784,7 @@ type 名 / encoding。
 
 | 方案 | 优点 | 缺点 | 适合 |
 |---|---|---|---|
-| **自定义 compact**（小端、定长固定宽度、变长有长度前缀、无对齐、版本头） | 零依赖、快、贴合“元数据 + 大 buffer”结构、易跨语言实现 | 自己维护编码规范 | ✅ **推荐（独立 dorabag 场景）** |
+| **自定义 compact**（小端、定长固定宽度、变长有长度前缀、无对齐、版本头） | 零依赖、快、贴合“元数据 + 大 buffer”结构、易跨语言实现 | 自己维护编码规范 | ✅ **推荐（独立 doracap 场景）** |
 | **CDR**（ROS2/DDS 用） | 与 ROS/MCAP 互通 | 有对齐规则、封装头、较复杂 | 若想与 rosbag2/MCAP 互通 |
 | **FlatBuffers / Cap'n Proto** | 零拷贝、点云 buffer 高效、跨语言 codegen | 引入依赖 + 生成代码 | 若追求极致性能 |
 
@@ -792,7 +792,7 @@ type 名 / encoding。
 就是一个 `u32 长度 + 原始字节`，最可移植；元数据用定宽标量 + 长度前缀。若将来要喂 ROS/Foxglove，
 可额外提供 **CDR 编码器**作为“编码插件”，同一份 `.rsm` 生成两种编码（CDR / 自定义）。
 
-**示例：`dorabag/PointCloud` wire 布局（小端、无对齐）**
+**示例：`doracap/PointCloud` wire 布局（小端、无对齐）**
 
 ```
 u32  payload_len；payload := 后续字段
@@ -812,32 +812,32 @@ u32  payload_len；payload := 后续字段
 - 消息带 `schema_version`/`encoding`（core 的 `Schema` 已能放）。
 - **只向后兼容地加字段**：新字段**追加在末尾**；解码器**跳过未知字段**；不删已有字段（或标记 deprecated）。
 - **不兼容变更 → 新 schema_id / 新类型名**，不同名共存。
-- `TypeName` 用完整、稳定的命名空间（`dorabag/PointCloud`），避免碰撞。
+- `TypeName` 用完整、稳定的命名空间（`doracap/PointCloud`），避免碰撞。
 - 点云的 `fields[]` 天然支持“字段增减/顺序变化”，点云本身不怕传感器字段变化，这是此类消息健壮的关键。
 
 ### 14.7 与“type-agnostic 核心”共存（分层）
 
 ```
-dorabag(核心)            # 只存字节 + Schema，不认识任何消息内容
-dorabag-msgs:           # 规范消息 + .rsm + 编码器/解码器（中立契约）
+doracap(核心)            # 只存字节 + Schema，不认识任何消息内容
+doracap-msgs:           # 规范消息 + .rsm + 编码器/解码器（中立契约）
    ├─ 生成 Rust 类型、Schema、wire encoder/decoder
    └─ well-known 类型注册表：type 名 → 编解码器
 glue/消费方              # 把来源数据(SensorData)转成规范消息，或读规范消息
-外部 viz 工具             # 只认识 dorabag 规范名 + 编码，用注册表分派解码
+外部 viz 工具             # 只认识 doracap 规范名 + 编码，用注册表分派解码
 ```
 
-- core **不“认识”点云/位姿**，但 `dorabag-msgs` 提供“如何把某规范类型编码成字节 + 其 `Schema`”。
-- **record 时用规范类型**：glue 把 `SensorData`（或点云）转成 `dorabag/PointCloud` 写入
+- core **不“认识”点云/位姿**，但 `doracap-msgs` 提供“如何把某规范类型编码成字节 + 其 `Schema`”。
+- **record 时用规范类型**：glue 把 `SensorData`（或点云）转成 `doracap/PointCloud` 写入
   → 这张 bag 就是“可直接被任意 viz 解”的数据。
-- **viz 工具按 well-known 注册表分派**：见 `dorabag/PointCloud` → 用其解码器；不认识的私有类型 → 跳过。
+- **viz 工具按 well-known 注册表分派**：见 `doracap/PointCloud` → 用其解码器；不认识的私有类型 → 跳过。
 
 ### 14.8 落到“3D 激光雷达实时回放”
 
 要真实回放一帧场景，bag 需要这几类**规范数据**：
 
-1. `dorabag/PointCloud`（每帧 + `frame_id` + 逐点 `time` 字段 → 光束扫动动画）；
-2. `dorabag/TransformStamped`（`lidar↔base`、`lidar↔IMU` 外参 + `base↔map` 每帧位姿）→ 把点云放进世界系；
-3. `dorabag/PoseStamped`/`Path`（轨迹，便于展示传感器运动）。
+1. `doracap/PointCloud`（每帧 + `frame_id` + 逐点 `time` 字段 → 光束扫动动画）；
+2. `doracap/TransformStamped`（`lidar↔base`、`lidar↔IMU` 外参 + `base↔map` 每帧位姿）→ 把点云放进世界系；
+3. `doracap/PoseStamped`/`Path`（轨迹，便于展示传感器运动）。
 
 viz 工具工作：读 `TransformStamped` 建 frame 图 → 把 `PointCloud.frame_id` 变换到显示系 → 累加/渲染。
 
@@ -847,15 +847,15 @@ viz 工具工作：读 `TransformStamped` 建 frame 图 → 把 `PointCloud.fram
 2. `.rsm` → Rust 类型 + encode/decode 的 codegen（或先手写这一个类型，验证编解码往返）。
 3. 定 `TransformStamped` / `PoseStamped` / `Header` / `Time` 的 `.rsm`。
 4. 规范类型注册表（type 名 → 编解码器），让 `info`/读取端按名分派。
-5. 接 `dorabag-fastlio` glue：把 `SensorData` 转成规范 `PointCloud` + `Transform`/`Pose` 写入。
+5. 接 `doracap-fastlio` glue：把 `SensorData` 转成规范 `PointCloud` + `Transform`/`Pose` 写入。
 6. 后续补 `Image` / `OccupancyGrid` / `Path` / `Marker`。
 
 ### 14.10 小结
 
-`dorabag-msgs` 的设计 = **一组共享 Rust 规范类型 + 一套“小端、长度前缀、大小全用”的文档化
+`doracap-msgs` 的设计 = **一组共享 Rust 规范类型 + 一套“小端、长度前缀、大小全用”的文档化
 compact 编码（物理）+ 一个封闭规范集合（保证可解）+ 版本演进规则 + well-known 类型注册表（分派）**。
 不需要专门的 `.rsm` 语言；若要跨语言 codegen，复用现有 schema 格式（FlatBuffers/proto/ROS .msg）
-而非自造。这样任何独立 viz 工具按公开字节布局实现解码，就能渲染 dorabag 录制的数据；dorabag 核心
+而非自造。这样任何独立 viz 工具按公开字节布局实现解码，就能渲染 doracap 录制的数据；doracap 核心
 仍然完全类型无关。
 
 ---
@@ -867,28 +867,28 @@ compact 编码（物理）+ 一个封闭规范集合（保证可解）+ 版本�
 
 ### 15.1 结论
 
-- **核心主链路不需要 ROS 兼容**：`单一 .rbag` + `dorabag-msgs` 规范消息 + 喂独立 viz，
+- **核心主链路不需要 ROS 兼容**：`单一 .dcap` + `doracap-msgs` 规范消息 + 喂独立 viz，
   完全不依赖 ROS。
-- **兼容仅作为可选层**，放在 `dorabag-ros`，用 feature 隔离（`--features ros2` / `ros1`），
+- **兼容仅作为可选层**，放在 `doracap-ros`，用 feature 隔离（`--features ros2` / `ros1`），
   核心 crate 保持零依赖、零 ROS 类型。
 - **分阶段**：P0 核心 → P1 读 ROS2 mcap（高价值低成本）→ P2 读 ROS1 `.bag`（按需）→ P3 写回（低）。
 
 ### 15.2 决策矩阵
 
-| 范围 | 价值 | 成本 | 与单文件 `.rbag`/中立契约一致性 | 判定 |
+| 范围 | 价值 | 成本 | 与单文件 `.dcap`/中立契约一致性 | 判定 |
 |---|---|---|---|---|
-| 核心 `.rbag` + `dorabag-msgs` + 喂 viz | 必做 | — | 完全一致 | **P0 最先** |
+| 核心 `.dcap` + `doracap-msgs` + 喂 viz | 必做 | — | 完全一致 | **P0 最先** |
 | 读 ROS2 `mcap` | 高 | 低 | 高（同是单文件自描述） | **P1 高优先** |
 | 读 ROS2 `sqlite3` | 中 | 低 | 中 | P1 附带（复用 CDR codec） |
 | 读 ROS1 `.bag` | 中 | 中高 | 低 | **P2 按需** |
 | 写回 MCAP（ROS2/Foxglove 可读） | 低 | 低 | 中 | P3 低优先 |
 | 写回 ROS1 `.bag` | 很低 | 高 | 低 | **明确不做** |
 | 完整 ROS 类型系统 / 动态反序列化 | 中 | 很高 | 低 | **明确不做**（违背类型无关） |
-| `/clock` + `use_sim_time` | 低 | 中 | 低 | **不做**（dorabag-msgs 自有时钟） |
+| `/clock` + `use_sim_time` | 低 | 中 | 低 | **不做**（doracap-msgs 自有时钟） |
 
 ### 15.3 三视角主要论点
 
-- **赞成方**：存量 ROS1/ROS2 数据集要吃；MCAP 是 ROS2 默认且与 `.rbag` 单文件天然契合；CDR 读成本被
+- **赞成方**：存量 ROS1/ROS2 数据集要吃；MCAP 是 ROS2 默认且与 `.dcap` 单文件天然契合；CDR 读成本被
   低估；不必做全 ROS 类型系统，只需手写 `Imu`/`PointCloud2`/`CustomMsg`。
 - **反对方**：核心目标不依赖它；CDR/ROS1 两套序列化 + 动态类型 + 时间语义是长期维护包袱；把兼容当核心
   会重新拉回“绑定具体库”的初衷；应作为可选/后置插件。同时自纠：“完全不做”不现实，因为大概率要用存量数据。
@@ -897,7 +897,7 @@ compact 编码（物理）+ 一个封闭规范集合（保证可解）+ 版本�
 ### 15.4 建议的落地顺序（把兼容“延后但不排除”）
 
 ```
-P0  类型无关 .rbag（MCAP 单文件）+ dorabag-msgs + 回放喂 viz        ← 先把主链路做稳
+P0  类型无关 .dcap（MCAP 单文件）+ doracap-msgs + 回放喂 viz        ← 先把主链路做稳
 P1  storage-mcap + codec-cdr + 手写 Imu/PointCloud2/CustomMsg     ← 高价值低成本，紧跟 P0
 P2  storage-rosbag1 + ROS1 序列化 + HeaderStamp 时间               ← 按需（经典数据集）
 P3  写回 MCAP+CDR（Foxglove/rosbag2 读）                           ← 低优先级
@@ -908,15 +908,15 @@ P3  写回 MCAP+CDR（Foxglove/rosbag2 读）                           ← 低�
 
 1. 必须直接回放**现有 ROS1/ROS2 bag 数据**（如 FAST-LIO 公开数据集）→ 提前 P1/P2；
 2. 独立 viz 工具需要**直接读 ROS2 MCAP** 互通 → 提前 P1；
-3. 计划把 dorabag 作为**通用 bag 工具发布**，供别人直接读 ROS 数据 → 提前 P1/P2。
+3. 计划把 doracap 作为**通用 bag 工具发布**，供别人直接读 ROS 数据 → 提前 P1/P2。
 
 ### 15.6 分水岭已拍板
 
 **已有结论：无必须直接回放的现成 ROS bag 存量数据。**
 
 - → 兼容**整体后置**：P1（读 ROS2 mcap）、P2（ROS1）、P3（写回）全部**暂不启动**；
-- 当前只做 **P0 核心**（单一 `.rbag` + `dorabag-msgs` + 喂独立 viz）；
-- 第 12/13 节的 `dorabag-ros` 设计**保留为“将来可选”**，仅当 §15.5 触发信号出现时再启动，
+- 当前只做 **P0 核心**（单一 `.dcap` + `doracap-msgs` + 喂独立 viz）；
+- 第 12/13 节的 `doracap-ros` 设计**保留为“将来可选”**，仅当 §15.5 触发信号出现时再启动，
   并作为 feature-gated 可选层接入，不进核心。
 
 ---
@@ -925,33 +925,33 @@ P3  写回 MCAP+CDR（Foxglove/rosbag2 读）                           ← 低�
 
 ### 16.1 总体判断
 
-**架构方向、分层、边界与关键决策（解耦 / 单文件 `.rbag` / 规范消息 / ROS 后置）已比较全面、自洽。**
+**架构方向、分层、边界与关键决策（解耦 / 单文件 `.dcap` / 规范消息 / ROS 后置）已比较全面、自洽。**
 但离“可直接实现 P0”还差几处**实现级**空白：有的只画了方向没落到字节/接口，有的清单本身不完整。
 
 ### 16.2 已覆盖（可视为定稿）
 
-- 定位：dorabag = 类型无关容器 + 时间调度引擎；四元组 `(channel, stamp, schema, bytes)`。
-- 分层：core / dorabag-msgs / dorabag-ros(后置) / glue，依赖单向无环。
-- 存储方向：单一 `.rbag`（MCAP 底层），自描述 + 索引 + 压缩。
+- 定位：doracap = 类型无关容器 + 时间调度引擎；四元组 `(channel, stamp, schema, bytes)`。
+- 分层：core / doracap-msgs / doracap-ros(后置) / glue，依赖单向无环。
+- 存储方向：单一 `.dcap`（MCAP 底层），自描述 + 索引 + 压缩。
 - 时间轴：rate / loop / seek / 非阻塞；整数时间戳。
 - 契约：channel / stamp / bytes / schema 四要素。
-- ROS 决策：当前不做，后置可选；`dorabag-ros` 保留为蓝图。
+- ROS 决策：当前不做，后置可选；`doracap-ros` 保留为蓝图。
 - 规范消息方向：共享 Rust 类型 + 文档化布局，不造 `.rsm`。
 
 ### 16.3 P0 实现前必须补的缺口（高优先）
 
-1. **单文件 `.rbag` 字节级布局 + 崩溃恢复**：MCAP 的 footer/summary 只在正常 close 时写，
+1. **单文件 `.dcap` 字节级布局 + 崩溃恢复**：MCAP 的 footer/summary 只在正常 close 时写，
    中断/断电会导致无索引、seek/info 失效 → 需定义容器版本头、头部信息、重索引/恢复策略。
 2. **时间 / 顺序语义落实**：
    - 时间戳表示（`u64 ns` vs `sec+nsec`）与换算；
    - play 的**顺序语义**：默认“单一合并时间序流”且**保持录制顺序、不重排**（匹配 FAST-LIO“先 IMU 后帧”）；
    - 回放精度 / 漂移、loop 重基准、`rate=0` 疯灌。
-3. **`dorabag-msgs` 补全**：
+3. **`doracap-msgs` 补全**：
    - 清单**已补 `Imu`**（FAST-LIO 录制/离线里程计必需，见 §14.3）；
    - 但每个规范消息的**完整字段 + wire 布局**尚未定义（仅 `PointCloud` 有方向）；`Header`/`Time` 需精确；
    - **compact 编码规则**（端序、长度前缀、嵌套、对齐）需写成明确规范。
-4. **消费方 / viz 接口**（“回放喂给独立 viz”的最后一公里）：dorabag 通过什么接口把数据交给 viz？
-   Rust 库 API（`for msg in player`）还是 CLI 启动 viz（`dorabag play --show xx.rbag`）？
+4. **消费方 / viz 接口**（“回放喂给独立 viz”的最后一公里）：doracap 通过什么接口把数据交给 viz？
+   Rust 库 API（`for msg in player`）还是 CLI 启动 viz（`doracap play --show xx.dcap`）？
    → 需明确集成模型。
 5. **录制 API**：如何注册 channel/schema、写消息；多源混合（点云 + 位姿同轴）；live vs 离线；
    是否允许存“不透明字节”通道（允许，但 viz 不可解，需注明推荐规范消息）。
@@ -971,14 +971,14 @@ P3  写回 MCAP+CDR（Foxglove/rosbag2 读）                           ← 低�
 - **时间戳表示**：内部调度时间用 `u64 纳秒`；每个规范消息仍自带 `Header.stamp`（sec + nsec）。
 - **play 输出模型**：默认**单一合并时间序流**，**保持录制顺序、不重排**；`sort_by_ts`（按 `bag.ts`
   严格重排）保留为可选，默认关闭。
-- **viz 集成模型**：**dorabag 管时序 + `dorabag play --show viz_app` 启动独立 viz**；
-  同时提供库 API 供 viz 直接读 `.rbag`。
+- **viz 集成模型**：**doracap 管时序 + `doracap play --show viz_app` 启动独立 viz**；
+  同时提供库 API 供 viz 直接读 `.dcap`。
 - **wire 编码**：自研紧凑 `rbag1`（全小端、无对齐、长度前缀），跨语言按文档实现；CDR 作未来可选插件。
 
 ### 16.6 小结：补齐即可实现
 
 当前方案**方向正确、架构清晰**，但实现 P0 前需补齐五点：
-**① `.rbag` 字节级布局与崩溃恢复；② 时间/顺序语义；③ dorabag-msgs 消息与 wire 布局补全（含 `Imu`）；
+**① `.dcap` 字节级布局与崩溃恢复；② 时间/顺序语义；③ doracap-msgs 消息与 wire 布局补全（含 `Imu`）；
 ④ 与 viz 的集成接口；⑤ 录制 API。** 补齐这五点即可进入实现。
 
 ---
@@ -987,9 +987,9 @@ P3  写回 MCAP+CDR（Foxglove/rosbag2 读）                           ← 低�
 
 ### 17.1 必补（P0 阻塞项）
 
-#### ① `.rbag` 单文件布局 + 崩溃恢复
+#### ① `.dcap` 单文件布局 + 崩溃恢复
 
-`.rbag` 本身就是一份 **MCAP 文件**，`header.profile="dorabag"`、`library="dorabag/<ver>"`。
+`.dcap` 本身就是一份 **MCAP 文件**，`header.profile="doracap"`、`library="doracap/<ver>"`。
 
 | MCAP 记录 | 承载内容 |
 |---|---|
@@ -1041,7 +1041,7 @@ impl Timestamp {
 - `try_next()`：未到 `next_due` 则返回 `NonBlocking`；`next()` 阻塞；
 - `play.now()`：暴露当前模拟时间，供 viz 同步/动画。
 
-#### ③ `dorabag-msgs` 补全 + wire 布局
+#### ③ `doracap-msgs` 补全 + wire 布局
 
 **通用 `Header` / `Time`**：
 ```
@@ -1082,17 +1082,17 @@ PoseStamped:      Header + pos:[f64;3] + quat:[f64;4]
 Path:             Header + poses: PoseStamped[]
 ```
 
-**Schema 注册表**：`type_name` 稳定名（如 `dorabag/PointCloud`）+ 可选 schema hash；
-`dorabag-msgs` 提供 `type_name → encode/decode`；容器/schema 首版都带 `format_version` 写入 `.rbag` 头。
+**Schema 注册表**：`type_name` 稳定名（如 `doracap/PointCloud`）+ 可选 schema hash；
+`doracap-msgs` 提供 `type_name → encode/decode`；容器/schema 首版都带 `format_version` 写入 `.dcap` 头。
 
 #### ④ 消费方 / viz 接口
 
 两个接口都提供，**以库 API 为主**：
 ```rust
-let mut play = dorabag::Player::open("a.rbag", PlayOptions::default().rate(1.0))?;
+let mut play = doracap::Player::open("a.dcap", PlayOptions::default().rate(1.0))?;
 for msg in play {                       // Message {channel, stamp, schema, payload}
     if msg.channel == "lidar" {
-        let cloud: PointCloud = dorabag_msgs::decode(&msg)?;
+        let cloud: PointCloud = doracap_msgs::decode(&msg)?;
         viz.render(&cloud);
     }
 }
@@ -1102,9 +1102,9 @@ play.now();                             // 当前模拟时间，供 viz 动画/�
 
 **CLI 启动模型**（demo 主链路）：
 ```bash
-dorabag record -o a.rbag --lidar ... --imu ...
-dorabag play a.rbag --show viz_app      # dorabag 管时序，拉起 viz_app 渲染
-dorabag play --json a.rbag              # JSON 流，供非 Rust viz
+doracap record -o a.dcap --lidar ... --imu ...
+doracap play a.dcap --show viz_app      # doracap 管时序，拉起 viz_app 渲染
+doracap play --json a.dcap              # JSON 流，供非 Rust viz
 ```
 
 同步：viz 用 `play.now()` + 各消息 `Header.stamp` 做多 channel 对齐；`play` 按 `bag.ts` 调度吐出。
@@ -1112,7 +1112,7 @@ dorabag play --json a.rbag              # JSON 流，供非 Rust viz
 #### ⑤ 录制 API
 
 ```rust
-let mut rec = dorabag::Recorder::open("a.rbag", RecordOptions::default())?;
+let mut rec = doracap::Recorder::open("a.dcap", RecordOptions::default())?;
 rec.register_channel("lidar", Schema::from_type::<PointCloud>())?; // 注册 codec
 rec.write_with_stamp("lidar", &cloud)?;                            // 自动从 Header 取 stamp
 rec.write("imu", ts, &imu)?;                                       // 显式 ts
@@ -1123,7 +1123,7 @@ rec.finish()?;                                                     // 写 summar
 
 - **多源混合**：调用方控制顺序；`MergedRecorder` 接收多个 `DataSource` 按 `bag.ts` 合并写入（与 play 对称）。
 - **live vs 离线**：`write` 按 chunk 缓冲、周期 flush；可选无阻塞消费。
-- **胶水**：`dorabag-fastlio` 用 `Recorder` 包装 `DataSource`（SimSource/LivoxSource），
+- **胶水**：`doracap-fastlio` 用 `Recorder` 包装 `DataSource`（SimSource/LivoxSource），
   把 `SensorData` 编码成 `PointCloud`/`Imu` 并提取 stamp。
 
 ### 17.2 建议补齐（中优先）
@@ -1137,7 +1137,7 @@ rec.finish()?;                                                     // 写 summar
 
 #### ⑦ 版本演进
 
-- **容器级**：`.rbag` header 带 `format_version`；读取器拒绝高于其支持的大版本。
+- **容器级**：`.dcap` header 带 `format_version`；读取器拒绝高于其支持的大版本。
 - **schema 级**：规范消息**只追加、不删不改序**；未知尾部字段旧解析器跳过；破坏性变更 → 新类型名/版本。
 - **schema hash**：类型定义内容哈希，校验写/读端一致，不匹配则警告。
 - 格式规范维护在 `spec/`，作为“契约”。
@@ -1167,35 +1167,35 @@ rec.finish()?;                                                     // 写 summar
 
 ### 17.3 P0 最小闭环原型落地记录
 
-**目标**：`record(Imu + PointCloud) → 单文件 .rbag → play → decode → round-trip` 跑通。
+**目标**：`record(Imu + PointCloud) → 单文件 .dcap → play → decode → round-trip` 跑通。
 
 **实际结构**（离线、零外部依赖）：
-- `crates/dorabag-core`：核心值类型 + 存储 trait + **`storage::singlefile`（自带单文件 `.rbag` 容器）**
+- `crates/doracap-core`：核心值类型 + 存储 trait + **`storage::singlefile`（自带单文件 `.dcap` 容器）**
   + `record::Recorder` + `play::Player`。
-- `crates/dorabag-msgs`：`Header`/`Time`/`PointCloud`/`Imu` + `rbag1` 编解码（含 golden / round-trip 测试）。
-- `crates/dorabag`：CLI（`selftest` / `info` / `play`；`record` 待接线）。
+- `crates/doracap-msgs`：`Header`/`Time`/`PointCloud`/`Imu` + `rbag1` 编解码（含 golden / round-trip 测试）。
+- `crates/doracap`：CLI（`selftest` / `info` / `play`；`record` 待接线）。
   `play` 支持 `--rate`/`--loop`/`--json`/`--show <cmd>`，可实时回放、输出单行 JSON、管道给外部 viz。
-- `crates/dorabag-fastlio`：FAST-LIO 胶水，`SensorData ⇄ dorabag-msgs`；`record_source` 把
-  `fast_lio::data_source::DataSource` 录进 `.rbag`，`BagDataSource` 从 `.rbag` 回放成 `DataSource`。
+- `crates/doracap-fastlio`：FAST-LIO 胶水，`SensorData ⇄ doracap-msgs`；`record_source` 把
+  `fast_lio::data_source::DataSource` 录进 `.dcap`，`BagDataSource` 从 `.dcap` 回放成 `DataSource`。
 
-**与 §9 的分层差异（待审）**：原型把存储后端 + Recorder/Player 直接并入 `dorabag-core`，
+**与 §9 的分层差异（待审）**：原型把存储后端 + Recorder/Player 直接并入 `doracap-core`，
 而非 §9 的独立 `storage-mcap` / facade / cli 拆法。优点是启动快；代价是 core 不再“纯 I/O 无关”。
 将来若要严格分层，可把 `storage::singlefile` 抽到独立 crate（实现同一 `StorageWriter/Reader` trait），
 core 只留类型 + trait。**交换后端只需换一个 crate，无需改 core/msgs。**
 
-**容器选择偏差**：设计 §6.0/§17 默认 MCAP；因离线无 `mcap` crate，P0 用**自实现单文件 `.rbag` 容器**
-（`#RBAG` 头 + schema/channel 段 + 消息流 + `RBAG_END` 尾索引 + 缺失时线性扫描恢复）。
+**容器选择偏差**：设计 §6.0/§17 默认 MCAP；因离线无 `mcap` crate，P0 用**自实现单文件 `.dcap` 容器**
+（`#DCAP` 头 + schema/channel 段 + 消息流 + `DCAP_END` 尾索引 + 缺失时线性扫描恢复）。
 仍是“单一文件”，且通过 storage trait 可后续置换为 MCAP。
 
 **验证结果**：
-- `cargo build` ✅；`cargo test`（dorabag-msgs 6 项）✅；
-- `cargo run -p dorabag -- selftest` → `selftest OK`；
-- `dorabag info <file>` → `messages: 2`、`topic "lidar": dorabag/PointCloud`、`topic "imu": dorabag/Imu`；
-- `dorabag play <file> --json` → 每条消息一行 JSON（点云含解码后 points、IMU 含 lin_acc/ang_vel）；
-  `--show <cmd>` 把 JSON 逐条写入外部进程 stdin（dorabag 管时序、viz 管渲染）。
-- `dorabag-fastlio glue_demo` → `expected=1052 actual=1052`、`glue OK`；`--lio` 用回放数据驱动
+- `cargo build` ✅；`cargo test`（doracap-msgs 6 项）✅；
+- `cargo run -p doracap -- selftest` → `selftest OK`；
+- `doracap info <file>` → `messages: 2`、`topic "lidar": doracap/PointCloud`、`topic "imu": doracap/Imu`；
+- `doracap play <file> --json` → 每条消息一行 JSON（点云含解码后 points、IMU 含 lin_acc/ang_vel）；
+  `--show <cmd>` 把 JSON 逐条写入外部进程 stdin（doracap 管时序、viz 管渲染）。
+- `doracap-fastlio glue_demo` → `expected=1052 actual=1052`、`glue OK`；`--lio` 用回放数据驱动
   FAST-LIO 建图：`frames=47 map_points=284 pos=(3.06,1.06,-0.02)`。
-- 文件头 `#RBAG`，尾 `RBAG_END` + `data_offset` + `message_count=2`。
+- 文件头 `#DCAP`，尾 `DCAP_END` + `data_offset` + `message_count=2`。
 
 **执行方式说明（并行）**：任务按依赖规划为
 `core↔msgs（无依赖，可并行）→ storage-file / facade（依赖 core/msgs，可并行）→ 集成`。
@@ -1206,7 +1206,7 @@ core 只留类型 + trait。**交换后端只需换一个 crate，无需改 core
 
 ## 附：FAST-LIO 时间语义（供 glue 实现参考）
 
-> 以下内容只用于**写 FAST-LIO 的胶水**，不属于 dorabag 内核。
+> 以下内容只用于**写 FAST-LIO 的胶水**，不属于 doracap 内核。
 
 - `crates/fast-lio/src/data_source.rs` — `DataSource` trait、`SimSource`；样本必须时间有序。
 - `crates/fast-lio/src/types.rs` — `SensorData` / `ImuRaw` / `AviaMsg` / `StandardMsg` / `TimeUnit`。
