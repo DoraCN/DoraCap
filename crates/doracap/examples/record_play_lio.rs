@@ -27,8 +27,8 @@
 //! 真机路径下 `--duration` 默认 0（不限时长）：录制会一直进行，直到
 //! 到达 `--duration` 秒，或手动 **Ctrl+C**（SIGINT）。Ctrl+C 会**优雅收尾**：
 //! 先把已录数据完整落盘（写出尾部 `DCAP_END` 索引，`.dcap` 可被正常回放），
-//! 然后**立即退出**（不进入耗时的重放建图）。若要同时回放+建图导出 `map.pcd`，
-//! 加 `--map`；建图阶段再按一次 Ctrl+C 可中断并导出已积累的结果。
+//! 然后**立即退出**（不进入耗时的重放建图）。若要同时建图导出 `map.pcd`，
+//! 加 `--map`：直接从**录制时**那次 FAST-LIO 的内存态导出地图与轨迹，**不再重放 `.dcap`**。
 //!
 //! 先可跑 `--discover` 确认雷达可达：
 //!   cargo run --release -p doracap --example record_play_lio --features livox \
@@ -48,11 +48,11 @@ mod app {
     use std::time::{Duration, Instant};
 
     use fast_lio::data_source::{DataSource, NonBlocking, SimParams, SimSource};
-    use fast_lio::laser_mapping::{LaserMapping, LioConfig};
+    use fast_lio::laser_mapping::LioConfig;
     use fast_lio::types::{LidarType, PointType, SensorData, TimeUnit};
 
-    use doracap_core::{PlayOptions, SingleFileWriter};
-    use doracap_fastlio::{BagDataSource, LioRecorder};
+    use doracap_core::SingleFileWriter;
+    use doracap_fastlio::LioRecorder;
 
     /// 一次录制的统计。
     #[derive(Debug)]
@@ -135,10 +135,10 @@ mod app {
         let mut source = SimSource::new(&params);
         let writer = SingleFileWriter::open(&out).map_err(|e| e.to_string())?;
         let cfg = lio_cfg(LidarType::Velo16);
-        let stats = record_loop(writer, &mut source, None, None, &cfg)?;
-        let frames = run_mapping(&out, &pcd, &pos, LidarType::Velo16, None)?;
+        let (stats, mut rec) = record_loop(writer, &mut source, None, None, &cfg)?;
 
         println!("[sim] recorded {stats:?} (total={}) -> {out}", stats.total());
+        let frames = export_map(&mut rec, &pcd, &pos)?;
         println!("[mapping] frames={frames} -> pcd={pcd}, pos={pos}");
         Ok(())
     }
@@ -213,7 +213,8 @@ mod app {
 
         let writer = SingleFileWriter::open(&out).map_err(|e| e.to_string())?;
         let cfg = lio_cfg(LidarType::Avia);
-        let stats = record_loop(writer, source.as_mut(), deadline, Some(&stop), &cfg)?;
+        let (stats, mut rec) =
+            record_loop(writer, source.as_mut(), deadline, Some(&stop), &cfg)?;
         if stats.total() == 0 {
             return Err("recorded 0 samples — check that the LiDAR is reachable and the config is valid".into());
         }
@@ -222,22 +223,15 @@ mod app {
         }
 
         println!("[live] recorded {stats:?} (total={}) -> {out}", stats.total());
-        // Ctrl+C == 停止并保存，立即退出，不进入耗时的重放建图。
+        // Ctrl+C == 停止并保存，立即退出（不进入耗时的重放建图）。
         if !map {
-            println!(
-                "[hint] replay + mapping: add --map; 或看内容: `doracap play {out} --json`"
-            );
+            println!("[hint] 需要同时导出 map.pcd/pos.txt: 加 --map, 或看内容: `doracap play {out} --json`");
             return Ok(());
         }
 
-        // 显式 --map：清空停止标记，允许再次 Ctrl+C 中断建图；中断时仍导出已积累的结果。
-        stop.store(false, Ordering::Relaxed);
-        let frames = run_mapping(&out, &pcd, &pos, LidarType::Avia, Some(&stop))?;
-        if stop.load(Ordering::Relaxed) {
-            println!("[mapping] interrupted by Ctrl+C; exported partial results");
-        } else {
-            println!("[mapping] frames={frames} -> pcd={pcd}, pos={pos}");
-        }
+        // 这里不再重放 .dcap：导出录制时那次 FAST-LIO 在内存里建好的地图与轨迹即可（一次完成）。
+        let frames = export_map(&mut rec, &pcd, &pos)?;
+        println!("[mapping] frames={frames} -> pcd={pcd}, pos={pos}");
         Ok(())
     }
 
@@ -255,7 +249,7 @@ mod app {
         deadline: Option<Instant>,
         stop: Option<&AtomicBool>,
         cfg: &LioConfig,
-    ) -> Result<Stats, String> {
+    ) -> Result<(Stats, LioRecorder), String> {
         // 一遍录制：写传感器 + 喂 FAST-LIO + 把位姿写到同一条 `.dcap`。
         let mut rec = LioRecorder::new(Box::new(writer), cfg).map_err(|e| e.to_string())?;
         let mut stats = Stats::new();
@@ -281,56 +275,16 @@ mod app {
             }
         }
         rec.finish().map_err(|e| e.to_string())?;
-        Ok(stats)
+        Ok((stats, rec))
     }
 
-    // ---------- 回放 -> FAST-LIO 建图 -> 导出 ----------
+    // ---------- 从录制态直接导出（一次完成，不重放 .dcap）----------
 
-    fn run_mapping(
-        bag: &str,
-        pcd: &str,
-        pos: &str,
-        lidar_type: LidarType,
-        stop: Option<&AtomicBool>,
-    ) -> Result<usize, String> {
-        let cfg = lio_cfg(lidar_type);
-        let mut mapping = LaserMapping::new(&cfg);
-        let mut replay = BagDataSource::open(bag, PlayOptions::default().rate(0.0))
-            .map_err(|e| e.to_string())?;
-
-        let mut frames = 0usize;
-        let mut poses: Vec<(f64, [f64; 3], [f64; 4])> = Vec::new();
-
-        loop {
-            if let Some(s) = stop
-                && s.load(Ordering::Relaxed)
-            {
-                break;
-            }
-            match replay.try_next() {
-                Ok(Some(data)) => {
-                    match &data {
-                        SensorData::Imu(imu) => mapping.add_imu(imu),
-                        SensorData::LidarStandard(s) => mapping.add_lidar_standard(s),
-                        SensorData::LidarAvia(a) => mapping.add_lidar_avia(a),
-                    }
-                    if mapping.has_data()
-                        && let Some(res) = mapping.run_once()
-                    {
-                        frames += 1;
-                        let pos3 = [res.pos[0], res.pos[1], res.pos[2]];
-                        poses.push((res.time, pos3, res.quat));
-                    }
-                }
-                Ok(None) => break,
-                Err(_) => std::thread::sleep(Duration::from_millis(1)),
-            }
-        }
-
-        mapping.ikdtree.flatten_to_storage();
-        write_pcd(pcd, &mapping.ikdtree.pcl_storage)?;
-        write_pos_log(pos, &poses)?;
-        Ok(frames)
+    fn export_map(rec: &mut LioRecorder, pcd: &str, pos: &str) -> Result<usize, String> {
+        rec.mapping_mut().ikdtree.flatten_to_storage();
+        write_pcd(pcd, &rec.mapping().ikdtree.pcl_storage)?;
+        write_pos_log(pos, rec.poses())?;
+        Ok(rec.poses().len())
     }
 
     // ---------- 导出 ----------

@@ -79,6 +79,8 @@ impl DataSource for BagDataSource {
 pub struct LioRecorder {
     rec: Recorder,
     mapping: LaserMapping,
+    /// 录制期间每帧位姿（time, position, quaternion[w,x,y,z]），用于直接导出轨迹。
+    poses: Vec<(f64, [f64; 3], [f64; 4])>,
 }
 
 impl LioRecorder {
@@ -90,6 +92,7 @@ impl LioRecorder {
         Ok(LioRecorder {
             rec,
             mapping: LaserMapping::new(cfg),
+            poses: Vec::new(),
         })
     }
 
@@ -133,6 +136,7 @@ impl LioRecorder {
             let mut buf = Vec::new();
             msg.encode(&mut buf);
             self.rec.write("pose", Timestamp::from_secs_f64(res.time), &buf)?;
+            self.poses.push((res.time, [res.pos[0], res.pos[1], res.pos[2]], res.quat));
         }
         Ok(())
     }
@@ -145,6 +149,15 @@ impl LioRecorder {
     /// 访问内部建图器（用于导出地图点等）。
     pub fn mapping(&self) -> &LaserMapping {
         &self.mapping
+    }
+
+    pub fn mapping_mut(&mut self) -> &mut LaserMapping {
+        &mut self.mapping
+    }
+
+    /// 录制期间产生的每帧位姿，可直接写成轨迹文件（无需重新回放）。
+    pub fn poses(&self) -> &[(f64, [f64; 3], [f64; 4])] {
+        &self.poses
     }
 }
 

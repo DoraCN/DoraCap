@@ -29,4 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `configs/livox/mid360_config.json`（需把 `host_ip` 改成机器人网卡 IP）。
 - `record_play_lio`：真机路径 Ctrl+C 即**停止并保存后退出**（不再自动进入耗时建图）；建图改为
   显式 `--map`，且建图阶段可再次 Ctrl+C 中断并导出已积累结果。
+- `record_play_lio`/`LioRecorder`：`--map` 改为**直接从录制时那次 FAST-LIO 的内存态导出**
+  `map.pcd` + `pos_log.txt`，不再重放 `.dcap`（单次完成，避免对大文件二次跑）。
 - 设计文档 `docs/doracap-design.md`（§0–§17）。
