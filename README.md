@@ -36,6 +36,10 @@ cargo run -p rustbag -- info <file.rbag>
 # 回放（默认摘要 / JSON 流 / 管道给外部 viz）
 cargo run -p rustbag -- play <file.rbag> [--rate 1] [--loop] [--json]
 cargo run -p rustbag -- play <file.rbag> --json --show '<your-viz-cmd>'
+
+# FAST-LIO 胶水：SimSource → .rbag → 回放(round-trip) → 驱动 FAST-LIO 建图
+cargo run -p rustbag-fastlio --bin glue_demo          # 录制+回放 round-trip 校验
+cargo run -p rustbag-fastlio --bin glue_demo -- --lio  # 额外跑一次 FAST-LIO
 ```
 
 ## 仓库结构
@@ -45,6 +49,7 @@ crates/
   rustbag-core/   # 值类型 + 存储 trait + 单文件后端 + Recorder/Player
   rustbag-msgs/   # 规范消息 + rbag1 编解码
   rustbag/        # 命令行
+  rustbag-fastlio/ # FAST-LIO 胶水：SensorData ⇄ 规范消息，录/放适配 DataSource
 docs/
   rustbag-design.md  # 完整设计文档（§0–§17）
 ```

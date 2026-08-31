@@ -13,4 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rustbag-msgs`：`Header`/`Time`/`PointCloud`/`Imu` + `rbag1` 编解码（含 golden/round-trip 测试）。
 - `rustbag` CLI：`selftest` / `info` / `play`。
 - `play` 支持 `--rate`/`--loop`/`--json`/`--show <cmd>`：实时回放并以 JSON 流输出/管道给外部 viz。
+- `rustbag-fastlio`：`SensorData ⇄ rustbag-msgs` 胶水，把 `fast_lio::data_source::DataSource`
+  录制进 `.rbag`、从 `.rbag` 回放成 `DataSource`；`glue_demo` 验证 round-trip 并能驱动 FAST-LIO 建图。
 - 设计文档 `docs/rustbag-design.md`（§0–§17）。

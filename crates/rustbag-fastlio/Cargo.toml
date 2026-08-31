@@ -1,0 +1,18 @@
+[package]
+name = "rustbag-fastlio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "rustbag_fastlio"
+
+[dependencies]
+rustbag-core = { path = "../rustbag-core" }
+rustbag-msgs = { path = "../rustbag-msgs" }
+fast-lio = { path = "/tmp/fastlio/crates/fast-lio" }
+
+[[bin]]
+name = "glue_demo"
+path = "src/bin/glue_demo.rs"
+

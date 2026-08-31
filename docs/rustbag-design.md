@@ -1175,6 +1175,8 @@ rec.finish()?;                                                     // 写 summar
 - `crates/rustbag-msgs`：`Header`/`Time`/`PointCloud`/`Imu` + `rbag1` 编解码（含 golden / round-trip 测试）。
 - `crates/rustbag`：CLI（`selftest` / `info` / `play`；`record` 待接线）。
   `play` 支持 `--rate`/`--loop`/`--json`/`--show <cmd>`，可实时回放、输出单行 JSON、管道给外部 viz。
+- `crates/rustbag-fastlio`：FAST-LIO 胶水，`SensorData ⇄ rustbag-msgs`；`record_source` 把
+  `fast_lio::data_source::DataSource` 录进 `.rbag`，`BagDataSource` 从 `.rbag` 回放成 `DataSource`。
 
 **与 §9 的分层差异（待审）**：原型把存储后端 + Recorder/Player 直接并入 `rustbag-core`，
 而非 §9 的独立 `storage-mcap` / facade / cli 拆法。优点是启动快；代价是 core 不再“纯 I/O 无关”。
@@ -1191,6 +1193,8 @@ core 只留类型 + trait。**交换后端只需换一个 crate，无需改 core
 - `rustbag info <file>` → `messages: 2`、`topic "lidar": rustbag/PointCloud`、`topic "imu": rustbag/Imu`；
 - `rustbag play <file> --json` → 每条消息一行 JSON（点云含解码后 points、IMU 含 lin_acc/ang_vel）；
   `--show <cmd>` 把 JSON 逐条写入外部进程 stdin（rustbag 管时序、viz 管渲染）。
+- `rustbag-fastlio glue_demo` → `expected=1052 actual=1052`、`glue OK`；`--lio` 用回放数据驱动
+  FAST-LIO 建图：`frames=47 map_points=284 pos=(3.06,1.06,-0.02)`。
 - 文件头 `#RBAG`，尾 `RBAG_END` + `data_offset` + `message_count=2`。
 
 **执行方式说明（并行）**：任务按依赖规划为
