@@ -5,6 +5,9 @@
 目标：把传感器采集 + 位姿/外参等数据录进**一个 `.dcap` 单文件**；回放读取该文件后，可交给独立的
 RViz 类可视化工具进行数据回放。详见 [docs/doracap-design.md](docs/doracap-design.md)。
 
+**第三方可视化工具**只需遵守 [`.dcap` 文件格式规范](docs/doracap-format.md)，即可读取**单个
+`.dcap` 文件**并按时间轴（播放 / 暂停 / 拖动 / 倍速 / 循环）逐帧回放建图过程，无需重跑 SLAM。
+
 ## 现状：P0 最小闭环
 
 已实现并验证：
@@ -111,6 +114,7 @@ crates/
   doracap-fastlio/ # FAST-LIO 胶水：SensorData ⇄ 规范消息，录/放适配 DataSource
 docs/
   doracap-design.md  # 完整设计文档（§0–§17）
+  doracap-format.md  # .dcap 公开发行格式规范（第三方 viz 实现依据）
 ```
 
 ## 约定

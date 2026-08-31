@@ -32,3 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `record_play_lio`/`LioRecorder`：`--map` 改为**直接从录制时那次 FAST-LIO 的内存态导出**
   `map.pcd` + `pos_log.txt`，不再重放 `.dcap`（单次完成，避免对大文件二次跑）。
 - 设计文档 `docs/doracap-design.md`（§0–§17）。
+- `doracap-msgs`：新增 `SceneMeta`（`world_frame` + 通道角色 `ChannelRole`）+ `rbag1` 编解码，使
+  `.dcap` **单文件自描述**（声明世界系与 lidar/imu/pose 角色，第三方 viz 无需重跑 SLAM 即可回放建图）。
+- `doracap-fastlio`：`LioRecorder` / `record_source` 录制时写入 `doracap/SceneMeta`；`BagDataSource`
+  自动跳过该通道，round-trip 不受影响。
+- `doracap`：`info` / `play --json` 展示场景元信息（world frame + 通道角色）。
+- 新增 `.dcap` **公开发行格式规范** `docs/doracap-format.md`：字节级布局、读取端独立伪代码、
+  写端契约、建图回放行为契约（配帧 / 四元数→旋转矩阵 / seek 重建）、第三方自检清单、跨语言
+  golden 样例 `crates/doracap/examples/gen_golden.rs`。

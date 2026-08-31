@@ -2,7 +2,7 @@
 //! 不依赖 serde：对规范消息手工序列化；未知类型用 payload hex 兜底。
 
 use doracap_core::OwnedMessage;
-use doracap_msgs::{Codec, Imu, PointCloud, PoseStamped};
+use doracap_msgs::{Codec, Imu, PointCloud, PoseStamped, SceneMeta};
 
 /// 序列化一条消息为单行 JSON。
 pub fn message_to_json(m: &OwnedMessage) -> String {
@@ -55,6 +55,25 @@ pub fn message_to_json(m: &OwnedMessage) -> String {
                     pose.orientation[2],
                     pose.orientation[3]
                 ));
+            }
+            Err(_) => f.push(format!("\"payload_hex\":{}", json_str(&hex(&m.payload)))),
+        },
+        "doracap/SceneMeta" => match SceneMeta::decode(&m.payload) {
+            Ok(meta) => {
+                f.push(format!("\"world_frame\":{}", json_str(&meta.world_frame)));
+                let roles: Vec<String> = meta
+                    .channels
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "{{\"name\":{},\"role\":{},\"frame_id\":{}}}",
+                            json_str(&c.name),
+                            json_str(&c.role),
+                            json_str(&c.frame_id)
+                        )
+                    })
+                    .collect();
+                f.push(format!("\"channels\":[{}]", roles.join(",")));
             }
             Err(_) => f.push(format!("\"payload_hex\":{}", json_str(&hex(&m.payload)))),
         },

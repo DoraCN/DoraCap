@@ -5,4 +5,4 @@ pub mod codec;
 pub mod types;
 
 pub use codec::{Codec, DecodeError};
-pub use types::{Header, Imu, PointCloud, PointField, PoseStamped, Stamped, Time};
+pub use types::{ChannelRole, Header, Imu, PointCloud, PointField, PoseStamped, SceneMeta, Stamped, Time};

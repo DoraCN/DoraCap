@@ -11,7 +11,7 @@ use doracap_core::{
     PlayOptions, Player, Recorder, Result, Schema, SingleFileReader, StorageWriter, Timestamp,
     TryNext,
 };
-use doracap_msgs::{Codec, Header, PoseStamped};
+use doracap_msgs::{ChannelRole, Codec, Header, PoseStamped, SceneMeta};
 
 use crate::conv::sec_nsec;
 
@@ -23,6 +23,8 @@ pub fn record_source<W: StorageWriter + 'static>(
     let mut rec = Recorder::new(Box::new(writer));
     rec.add_channel("imu", &schema_of::<doracap_msgs::Imu>())?;
     rec.add_channel("lidar", &schema_of::<doracap_msgs::PointCloud>())?;
+    // 自描述：声明世界系与通道角色，让第三方 viz 读单文件即可回放建图。
+    write_scene(&mut rec, "map", false)?;
     while let Some(data) = source.next() {
         let (channel, ts, buf) = conv::encode(&data);
         rec.write(channel, Timestamp::from_secs_f64(ts), &buf)?;
@@ -89,6 +91,8 @@ impl LioRecorder {
         rec.add_channel("imu", &schema_of::<doracap_msgs::Imu>())?;
         rec.add_channel("lidar", &schema_of::<doracap_msgs::PointCloud>())?;
         rec.add_channel("pose", &schema_of::<PoseStamped>())?;
+        // 自描述：建图回放源，声明 world_frame + 各通道角色（含 pose 通道）。
+        write_scene(&mut rec, "map", true)?;
         Ok(LioRecorder {
             rec,
             mapping: LaserMapping::new(cfg),
@@ -169,6 +173,42 @@ fn schema_of<T: Codec>() -> Schema {
     }
 }
 
+/// 构造一份建图场景元数据，写入 `.dcap` 使文件自描述。
+fn scene_meta(world_frame: &str, has_pose: bool) -> SceneMeta {
+    let mut channels = vec![
+        ChannelRole {
+            name: "imu".into(),
+            role: "imu".into(),
+            frame_id: "imu".into(),
+        },
+        ChannelRole {
+            name: "lidar".into(),
+            role: "lidar".into(),
+            frame_id: "lidar".into(),
+        },
+    ];
+    if has_pose {
+        channels.push(ChannelRole {
+            name: "pose".into(),
+            role: "pose".into(),
+            frame_id: world_frame.into(),
+        });
+    }
+    SceneMeta {
+        world_frame: world_frame.into(),
+        channels,
+    }
+}
+
+/// 把场景元数据作为 `doracap/SceneMeta` 通道写入 `.dcap`（单条、时间戳 0）。
+fn write_scene(rec: &mut Recorder, world_frame: &str, has_pose: bool) -> Result<()> {
+    rec.add_channel("scene", &schema_of::<SceneMeta>())?;
+    let meta = scene_meta(world_frame, has_pose);
+    let mut buf = Vec::new();
+    meta.encode(&mut buf);
+    rec.write("scene", Timestamp(0), &buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,8 +245,18 @@ mod tests {
         let pose = msgs.iter().filter(|m| m.channel == "pose").count();
         let imu = msgs.iter().filter(|m| m.channel == "imu").count();
         let lidar = msgs.iter().filter(|m| m.channel == "lidar").count();
+        let scene = msgs.iter().filter(|m| m.channel == "scene").count();
         assert!(imu > 0 && lidar > 0, "sensor channels missing");
         assert!(pose > 0, "pose channel (trajectory) missing from .dcap");
+        assert_eq!(scene, 1, "scene metadata should be written once");
+        // 自描述：能解码出 world_frame 与通道角色。
+        let meta = msgs
+            .iter()
+            .find(|m| m.channel == "scene")
+            .and_then(|m| doracap_msgs::SceneMeta::decode(&m.payload).ok())
+            .expect("SceneMeta decodes");
+        assert_eq!(meta.world_frame, "map");
+        assert!(meta.channels.iter().any(|c| c.role == "pose"));
 
         let _ = std::fs::remove_file(&path);
     }

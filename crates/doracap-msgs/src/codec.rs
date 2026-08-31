@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use crate::types::{Header, Imu, PointCloud, PointField, PoseStamped, Time};
+use crate::types::{ChannelRole, Header, Imu, PointCloud, PointField, PoseStamped, SceneMeta, Time};
 
 #[derive(Debug)]
 pub struct DecodeError(pub String);
@@ -271,6 +271,37 @@ fn decode_pose(buf: &[u8]) -> DecodeResult<PoseStamped> {
     })
 }
 
+fn encode_scene(s: &SceneMeta, out: &mut Vec<u8>) {
+    push_str(out, &s.world_frame);
+    push_u32(out, s.channels.len() as u32);
+    for ch in &s.channels {
+        push_str(out, &ch.name);
+        push_str(out, &ch.role);
+        push_str(out, &ch.frame_id);
+    }
+}
+
+fn decode_scene(buf: &[u8]) -> DecodeResult<SceneMeta> {
+    let mut c = Cursor::new(buf);
+    let world_frame = c.str()?;
+    let n = c.u32()? as usize;
+    let mut channels = Vec::with_capacity(n);
+    for _ in 0..n {
+        channels.push(ChannelRole {
+            name: c.str()?,
+            role: c.str()?,
+            frame_id: c.str()?,
+        });
+    }
+    if c.pos != c.b.len() {
+        return Err(DecodeError("trailing bytes".into()));
+    }
+    Ok(SceneMeta {
+        world_frame,
+        channels,
+    })
+}
+
 impl_codec_msg!(
     PointCloud,
     "doracap/PointCloud",
@@ -279,11 +310,12 @@ impl_codec_msg!(
 );
 impl_codec_msg!(Imu, "doracap/Imu", encode_imu, decode_imu);
 impl_codec_msg!(PoseStamped, "doracap/PoseStamped", encode_pose, decode_pose);
+impl_codec_msg!(SceneMeta, "doracap/SceneMeta", encode_scene, decode_scene);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Header, Imu, PointCloud, PointField, PoseStamped, Stamped, Time};
+    use crate::types::{ChannelRole, Header, Imu, PointCloud, PointField, PoseStamped, SceneMeta, Stamped, Time};
 
     fn ts(sec: i64, nsec: u32) -> Time {
         Time { sec, nsec }
@@ -424,5 +456,69 @@ mod tests {
         let trailing = [buf.as_slice(), b"extra"].concat();
         assert!(PointCloud::decode(&trailing).is_err()); // trailing 字节 → 报错
         assert!(PointCloud::decode(&[]).is_err());
+    }
+
+    fn sample_scene() -> SceneMeta {
+        SceneMeta {
+            world_frame: "map".into(),
+            channels: vec![
+                ChannelRole {
+                    name: "imu".into(),
+                    role: "imu".into(),
+                    frame_id: "imu".into(),
+                },
+                ChannelRole {
+                    name: "lidar".into(),
+                    role: "lidar".into(),
+                    frame_id: "lidar".into(),
+                },
+                ChannelRole {
+                    name: "pose".into(),
+                    role: "pose".into(),
+                    frame_id: "map".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn scene_roundtrip() {
+        let scene = sample_scene();
+        let mut buf = Vec::new();
+        scene.encode(&mut buf);
+        let back = SceneMeta::decode(&buf).unwrap();
+        assert_eq!(scene, back);
+        assert_eq!(back.world_frame, "map");
+        assert_eq!(back.channels.len(), 3);
+    }
+
+    #[test]
+    fn scene_golden_bytes() {
+        let scene = sample_scene();
+        let mut buf = Vec::new();
+        scene.encode(&mut buf);
+        // world_frame="map"(7) + n_channels(4) + 3 条 channel：
+        //   imu  (name/role/frame_id 各 4+3) = 3*7  = 21
+        //   lidar(各 4+5)                   = 3*9  = 27
+        //   pose (name/role 4+4, frame 4+3) = 8+8+7 = 23
+        //   => 7 + 4 + 21 + 27 + 23 = 82
+        assert_eq!(buf.len(), 82, "golden length mismatch");
+        // 头部 = world_frame 长度 3 + "map"：`03000000` + `6d6170`
+        const HEAD_HEX: &str = "030000006d6170";
+        let head: Vec<u8> = HEAD_HEX
+            .as_bytes()
+            .chunks(2)
+            .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+            .collect();
+        assert_eq!(&buf[..head.len()], &head[..]);
+    }
+
+    #[test]
+    fn scene_bad_input() {
+        assert!(SceneMeta::decode(&[]).is_err());
+        let mut buf = Vec::new();
+        sample_scene().encode(&mut buf);
+        let cut = &buf[..buf.len() - 1];
+        assert!(SceneMeta::decode(cut).is_err());
     }
 }

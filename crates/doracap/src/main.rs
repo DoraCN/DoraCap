@@ -9,7 +9,7 @@ use doracap_core::{
     OwnedMessage, PlayOptions, Player, Recorder, Schema, SingleFileReader, SingleFileWriter,
     StorageReader, Timestamp,
 };
-use doracap_msgs::{Codec, Header, Imu, PointCloud, PointField, Time};
+use doracap_msgs::{Codec, Header, Imu, PointCloud, PointField, SceneMeta, Time};
 
 mod json;
 
@@ -224,7 +224,7 @@ fn info(path: Option<&str>) -> ExitCode {
                 .unwrap_or(0.0)
         );
     }
-    let reader = match SingleFileReader::open(path) {
+    let mut reader = match SingleFileReader::open(path) {
         Ok(r) => r,
         Err(e) => return fail(&e.to_string()),
     };
@@ -236,6 +236,19 @@ fn info(path: Option<&str>) -> ExitCode {
             .map(|s| s.type_name.clone())
             .unwrap_or_default();
         println!("topic {:?} : {}", c.name, schema);
+    }
+    // 场景元信息（自描述）：告诉 viz 世界系与各通道角色。
+    if let Ok(msgs) = reader.read_all()
+        && let Some(m) = msgs.iter().find(|m| m.channel == "scene")
+        && let Ok(meta) = SceneMeta::decode(&m.payload)
+    {
+        println!("scene: world={}", meta.world_frame);
+        for ch in &meta.channels {
+            println!(
+                "  role {:?}: channel={:?} frame={:?}",
+                ch.role, ch.name, ch.frame_id
+            );
+        }
     }
     ExitCode::SUCCESS
 }

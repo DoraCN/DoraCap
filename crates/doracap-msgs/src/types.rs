@@ -57,6 +57,34 @@ pub struct PoseStamped {
     pub orientation: [f64; 4],
 }
 
+/// 一个通道在场景里的角色声明。
+///
+/// `role` 是开放字符串（如 `"lidar"` / `"imu"` / `"pose"` / `"tf"`），不设枚举，
+/// 便于跨语言与未来扩展。`frame_id` 是该通道数据所在的坐标系（如点云帧为
+/// `"lidar"`、位姿通道为世界系 `"map"`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelRole {
+    pub name: String,
+    pub role: String,
+    pub frame_id: String,
+}
+
+/// 场景元数据：声明"回放这个 `.dcap` 时，建图回放世界系是什么、各通道扮演什么角色"。
+///
+/// 这是让 `.dcap` **单文件自描述**、第三方 viz 无需重跑 SLAM 即可按视频方式回放建图的
+/// 关键。它作为一条规范消息以 `doracap/SceneMeta` 通道写入 `.dcap`（通常一条、时间戳为
+/// 0）。消费端读到它即可知道：
+/// - `world_frame`：建图/累加地图所用的世界坐标系（如 `"map"`）；
+/// - `channels`：每个通道名 → 角色 + 所在 frame。
+///
+/// 有了它，viz 只需把 `lidar` 通道的每一帧经对应 `pose` 通道的位姿变换到 `world_frame`，
+/// 再逐帧累加，即可"像播放视频一样"重现建图过程。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SceneMeta {
+    pub world_frame: String,
+    pub channels: Vec<ChannelRole>,
+}
+
 /// 能提供语义（传感器）时间的规范消息。
 ///
 /// doracap 顶层 `Recorder` 依赖它从消息的 `Header` 自动提取调度时间戳，
