@@ -27,4 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `doracap` CLI `play`：新增 `--seek <secs>` / `--seek-ratio <r>`，支持跳到时间轴任意位置。
 - `record_play_lio`：新增 `--discover`（真机先探测 Livox 设备是否可达）与可编辑配置模板
   `configs/livox/mid360_config.json`（需把 `host_ip` 改成机器人网卡 IP）。
+- `record_play_lio`：真机路径 Ctrl+C 即**停止并保存后退出**（不再自动进入耗时建图）；建图改为
+  显式 `--map`，且建图阶段可再次 Ctrl+C 中断并导出已积累结果。
 - 设计文档 `docs/doracap-design.md`（§0–§17）。

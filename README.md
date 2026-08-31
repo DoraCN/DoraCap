@@ -84,9 +84,16 @@ cargo run --release -p doracap --example record_play_lio --features livox \
      -- --live --config mid360_config.json --scan-hz 10 --duration 30 \
         --out /tmp/live.dcap --pcd /tmp/map_live.pcd --pos /tmp/pos_live.txt
    ```
+   实际上真机上更常用**只录不建图**（`Ctrl+C` 即停止并保存，立即退出），需要时再加 `--map`：
+   ```bash
+   cargo run --release -p doracap --example record_play_lio --features livox \
+     -- --live --config mid360_config.json --scan-hz 10 --out live.dcap
+   # Ctrl+C -> 落盘 live.dcap 后退出，不再耗时重放建图
+   ```
    `--duration` 默认 `0`（不限时长）：录制会一直进行，手动 **Ctrl+C** 会**优雅收尾**（先把已录数据
-   完整落盘、写出尾部索引，再继续建图导出）。想定时结束就显式传 `--duration 30`。产出的
-   `/tmp/live.dcap` 自带 `imu / lidar / pose` 三通道，是**自洽的建图过程回放源**（无需重跑 SLAM）。
+   完整落盘、写出尾部索引，然后退出）。想定时结束传 `--duration 30`。要**一并回放+建图导出**就加
+   `--map`（建图阶段再按一次 Ctrl+C 可中断）。产出的 `.dcap` 自带 `imu / lidar / pose` 三通道，
+   是**自洽的建图过程回放源**（无需重跑 SLAM）。
 2. **判据**：控制台打印 `[live] recorded Stats { imu: ..., lidar: ... }` 与 `[mapping] frames=...`；
    `frames` 应非 0（否则说明回放未驱动起建图）。用 `pcl_viewer /tmp/map_live.pcd` 看到与
    FAST-LIO 直跑一致的地图，即验收通过。

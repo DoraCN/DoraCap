@@ -27,11 +27,19 @@
 //! 真机路径下 `--duration` 默认 0（不限时长）：录制会一直进行，直到
 //! 到达 `--duration` 秒，或手动 **Ctrl+C**（SIGINT）。Ctrl+C 会**优雅收尾**：
 //! 先把已录数据完整落盘（写出尾部 `DCAP_END` 索引，`.dcap` 可被正常回放），
-//! 再继续建图并导出。
+//! 然后**立即退出**（不进入耗时的重放建图）。若要同时回放+建图导出 `map.pcd`，
+//! 加 `--map`；建图阶段再按一次 Ctrl+C 可中断并导出已积累的结果。
 //!
 //! 先可跑 `--discover` 确认雷达可达：
 //!   cargo run --release -p doracap --example record_play_lio --features livox \
 //!     -- --discover --config mid360_config.json
+//! 采集+保存（不建图）：
+//!   cargo run --release -p doracap --example record_play_lio --features livox \
+//!     -- --live --config mid360_config.json --scan-hz 10 --out live.dcap
+//! 采集+保存+建图导出：
+//!   cargo run --release -p doracap --example record_play_lio --features livox \
+//!     -- --live --config mid360_config.json --scan-hz 10 --out live.dcap --map \
+//!        --pcd map_live.pcd --pos pos_live.txt
 //! ```
 
 #[cfg(feature = "fastlio")]
@@ -128,7 +136,7 @@ mod app {
         let writer = SingleFileWriter::open(&out).map_err(|e| e.to_string())?;
         let cfg = lio_cfg(LidarType::Velo16);
         let stats = record_loop(writer, &mut source, None, None, &cfg)?;
-        let frames = run_mapping(&out, &pcd, &pos, LidarType::Velo16)?;
+        let frames = run_mapping(&out, &pcd, &pos, LidarType::Velo16, None)?;
 
         println!("[sim] recorded {stats:?} (total={}) -> {out}", stats.total());
         println!("[mapping] frames={frames} -> pcd={pcd}, pos={pos}");
@@ -177,6 +185,7 @@ mod app {
         let out = arg(args, "--out").unwrap_or_else(|| "/tmp/live.dcap".into());
         let pcd = arg(args, "--pcd").unwrap_or_else(|| "/tmp/map_live.pcd".into());
         let pos = arg(args, "--pos").unwrap_or_else(|| "/tmp/pos_live.txt".into());
+        let map = args.iter().any(|a| a == "--map");
         // 0 = 不限时长，直到手动 Ctrl+C。
         let duration = argf(args, "--duration", 0.0);
         let scan_hz = argf(args, "--scan-hz", 10.0);
@@ -212,12 +221,23 @@ mod app {
             println!("[live] Ctrl+C received, finalized {out}");
         }
 
-        // 建图/导出阶段：重新武装 Ctrl+C 为“立即结束”，避免回放期间无法中断。
-        let _ = ctrlc::set_handler(|| std::process::exit(130));
-
-        let frames = run_mapping(&out, &pcd, &pos, LidarType::Avia)?;
         println!("[live] recorded {stats:?} (total={}) -> {out}", stats.total());
-        println!("[mapping] frames={frames} -> pcd={pcd}, pos={pos}");
+        // Ctrl+C == 停止并保存，立即退出，不进入耗时的重放建图。
+        if !map {
+            println!(
+                "[hint] replay + mapping: add --map; 或看内容: `doracap play {out} --json`"
+            );
+            return Ok(());
+        }
+
+        // 显式 --map：清空停止标记，允许再次 Ctrl+C 中断建图；中断时仍导出已积累的结果。
+        stop.store(false, Ordering::Relaxed);
+        let frames = run_mapping(&out, &pcd, &pos, LidarType::Avia, Some(&stop))?;
+        if stop.load(Ordering::Relaxed) {
+            println!("[mapping] interrupted by Ctrl+C; exported partial results");
+        } else {
+            println!("[mapping] frames={frames} -> pcd={pcd}, pos={pos}");
+        }
         Ok(())
     }
 
@@ -271,6 +291,7 @@ mod app {
         pcd: &str,
         pos: &str,
         lidar_type: LidarType,
+        stop: Option<&AtomicBool>,
     ) -> Result<usize, String> {
         let cfg = lio_cfg(lidar_type);
         let mut mapping = LaserMapping::new(&cfg);
@@ -280,18 +301,29 @@ mod app {
         let mut frames = 0usize;
         let mut poses: Vec<(f64, [f64; 3], [f64; 4])> = Vec::new();
 
-        while let Some(data) = replay.next() {
-            match &data {
-                SensorData::Imu(imu) => mapping.add_imu(imu),
-                SensorData::LidarStandard(s) => mapping.add_lidar_standard(s),
-                SensorData::LidarAvia(a) => mapping.add_lidar_avia(a),
-            }
-            if mapping.has_data()
-                && let Some(res) = mapping.run_once()
+        loop {
+            if let Some(s) = stop
+                && s.load(Ordering::Relaxed)
             {
-                frames += 1;
-                let pos3 = [res.pos[0], res.pos[1], res.pos[2]];
-                poses.push((res.time, pos3, res.quat));
+                break;
+            }
+            match replay.try_next() {
+                Ok(Some(data)) => {
+                    match &data {
+                        SensorData::Imu(imu) => mapping.add_imu(imu),
+                        SensorData::LidarStandard(s) => mapping.add_lidar_standard(s),
+                        SensorData::LidarAvia(a) => mapping.add_lidar_avia(a),
+                    }
+                    if mapping.has_data()
+                        && let Some(res) = mapping.run_once()
+                    {
+                        frames += 1;
+                        let pos3 = [res.pos[0], res.pos[1], res.pos[2]];
+                        poses.push((res.time, pos3, res.quat));
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(1)),
             }
         }
 
