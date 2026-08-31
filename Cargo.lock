@@ -51,6 +51,8 @@ version = "0.1.0"
 [[package]]
 name = "fast-lio"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b6c76859155bac499af3072bdfc0e69f3aa1daeb9bc10c80d0cc75e66fad448"
 dependencies = [
  "nalgebra",
 ]

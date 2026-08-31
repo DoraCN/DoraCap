@@ -10,9 +10,8 @@ name = "doracap_fastlio"
 [dependencies]
 doracap-core = { path = "../doracap-core" }
 doracap-msgs = { path = "../doracap-msgs" }
-fast-lio = { path = "/tmp/fastlio/crates/fast-lio" }
+fast-lio = "0.1.0"
 
 [[bin]]
 name = "glue_demo"
 path = "src/bin/glue_demo.rs"
-
