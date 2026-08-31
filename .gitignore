@@ -1,0 +1,4 @@
+/target
+**/*.rbag
+.agents/
+.codex/
