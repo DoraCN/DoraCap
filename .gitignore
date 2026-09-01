@@ -1,4 +1,5 @@
 /target
 **/*.dcap
+**/*.zip
 .agents/
 .codex/

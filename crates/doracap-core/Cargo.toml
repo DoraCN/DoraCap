@@ -13,3 +13,4 @@ categories = ["data-structures", "development-tools", "encoding"]
 name = "doracap_core"
 
 [dependencies]
+flate2 = "1"

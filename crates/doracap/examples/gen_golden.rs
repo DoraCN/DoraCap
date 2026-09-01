@@ -1,7 +1,11 @@
-//! 生成一个最小的、含三个规范消息 + 场景元数据的 `.dcap` golden 文件，
-//! 并逐区段打印其字节，供跨语言实现对拍（见 docs/doracap-format.md §13）。
+//! 生成一个最小的、含三个规范消息 + 场景元数据的 `.dcap` v2 golden 文件，
+//! 并逐区段打印其结构（Header / Schemas / Channels / Chunk / Footer 索引），
+//! 供跨语言实现对拍（见 docs/doracap-format.md §15）。
+//!
+//! 注意：v2 的 chunk payload 是压缩的，因此 golden 验证的是**容器结构 + 解压后的消息布局**，
+//! 而非压缩字节本身（压缩字节随压缩库/版本可能变化）。
 
-use doracap_core::{Recorder, Schema, SingleFileWriter, Timestamp};
+use doracap_core::{Recorder, Schema, SingleFileReader, SingleFileWriter, StorageReader, Timestamp};
 use doracap_msgs::{
     ChannelRole, Codec, Header, Imu, PointCloud, PointField, PoseStamped, SceneMeta, Time,
 };
@@ -59,7 +63,6 @@ fn main() {
     scene.encode(&mut b);
     rec.write("scene", Timestamp(0), &b).unwrap();
 
-    // Imu
     let imu = Imu {
         header: Header {
             stamp: ts(0, 0),
@@ -77,7 +80,6 @@ fn main() {
     rec.write("imu", Timestamp::from_sec_nsec(1, 0), &b)
         .unwrap();
 
-    // PointCloud（1 点）
     let cloud = PointCloud {
         header: Header {
             stamp: ts(2, 0),
@@ -119,7 +121,6 @@ fn main() {
     rec.write("lidar", Timestamp::from_sec_nsec(2, 0), &b)
         .unwrap();
 
-    // PoseStamped
     let pose = PoseStamped {
         header: Header {
             stamp: ts(2, 0),
@@ -134,13 +135,18 @@ fn main() {
         .unwrap();
     rec.finish().unwrap();
 
-    // 读回并逐区段打印
+    // ---------- 读回并逐区段打印 ----------
     let bytes = std::fs::read(path).unwrap();
     println!("total {} bytes", bytes.len());
     println!();
-    hex_block("HEADER (magic+version+flags)", &bytes[..13]);
 
-    let mut pos = 13;
+    // Header
+    hex_block(
+        "HEADER (magic + version + flags + compressor)",
+        &bytes[..17],
+    );
+    let mut pos = 17;
+
     // Schemas
     let cnt = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
     let schemas_start = pos;
@@ -167,45 +173,77 @@ fn main() {
         println!("CHANNEL id={id} name={name:?} schema_id={sid}");
     }
     hex_block("CHANNELS section", &bytes[chans_start..pos]);
-    println!("DATA_OFFSET = {pos}");
+    println!("DATA_OFFSET = {pos}\n");
 
-    // 消息流：从 data_offset 到 footer 起点（file_len - 24）
-    let msg_start = pos;
-    let msg_end = bytes.len() - 24;
-    let mut mp = msg_start;
-    let mut idx = 0;
-    while mp < msg_end {
-        let chan = u16::from_le_bytes(bytes[mp..mp + 2].try_into().unwrap());
-        mp += 2;
-        let stamp = u64::from_le_bytes(bytes[mp..mp + 8].try_into().unwrap());
-        mp += 8;
-        let len = u32::from_le_bytes(bytes[mp..mp + 4].try_into().unwrap()) as usize;
-        mp += 4;
-        let payload = &bytes[mp..mp + len];
-        let name = match chan {
-            1 => "scene",
-            2 => "imu",
-            3 => "lidar",
-            4 => "pose",
-            _ => "?",
-        };
+    // Chunks
+    const CHUNK_HDR: usize = 10 + 8 + 4 + 8 + 8 + 4 + 4 + 4; // = 50
+    let mut mp = pos;
+    let mut cidx = 0usize;
+    while mp < bytes.len() && &bytes[mp..mp + 10] == b"DCAP_CHUNK" {
+        let off = mp;
+        let mut q = mp + 10;
+        let mb = u64::from_le_bytes(bytes[q..q + 8].try_into().unwrap());
+        q += 8;
+        let mc = u32::from_le_bytes(bytes[q..q + 4].try_into().unwrap());
+        q += 4;
+        let ss = u64::from_le_bytes(bytes[q..q + 8].try_into().unwrap());
+        q += 8;
+        let es = u64::from_le_bytes(bytes[q..q + 8].try_into().unwrap());
+        q += 8;
+        let us = u32::from_le_bytes(bytes[q..q + 4].try_into().unwrap());
+        q += 4;
+        let cs = u32::from_le_bytes(bytes[q..q + 4].try_into().unwrap());
+        q += 4;
+        let crc = u32::from_le_bytes(bytes[q..q + 4].try_into().unwrap());
+        q += 4;
         println!(
-            "MESSAGE #{idx}: channel_id={chan} ({name}) stamp_ns={stamp} payload_len={len}\n  record hex: {}",
-            hex(&bytes[mp - 14..mp + len])
+            "CHUNK #{cidx}: @{off} msg_begin={mb} msg_count={mc} start_ns={ss} end_ns={es} uncompressed={us}B compressed={cs}B crc={crc:08x}"
         );
-        println!("  payload hex: {}", hex(payload));
-        mp += len;
-        idx += 1;
+        hex_block(&format!("CHUNK #{cidx} header"), &bytes[off..off + CHUNK_HDR]);
+        mp = q + cs as usize;
+        cidx += 1;
     }
-    println!(
-        "MESSAGE DATA (start={msg_start} len={} bytes)",
-        msg_end - msg_start
-    );
-    hex_block("MESSAGES section", &bytes[msg_start..msg_end]);
+    println!();
 
-    // 尾部 footer (最后 24 字节)
-    let footer = &bytes[bytes.len() - 24..];
-    hex_block("FOOTER (DCAP_END + data_offset + message_count)", footer);
+    // Footer 索引 + 尾标
+    let trailer_start = bytes.len() - 32;
+    assert_eq!(&bytes[trailer_start..trailer_start + 8], b"DCAP_END");
+    let footer_data_offset =
+        u64::from_le_bytes(bytes[trailer_start + 8..trailer_start + 16].try_into().unwrap());
+    let chunk_count =
+        u64::from_le_bytes(bytes[trailer_start + 16..trailer_start + 24].try_into().unwrap());
+    let message_count =
+        u64::from_le_bytes(bytes[trailer_start + 24..trailer_start + 32].try_into().unwrap());
+    let index_start = trailer_start - chunk_count as usize * 28;
+    let mut ip = index_start;
+    println!(
+        "FOOTER: data_offset={footer_data_offset} chunk_count={chunk_count} message_count={message_count}"
+    );
+    for i in 0..chunk_count as usize {
+        let off = u64::from_le_bytes(bytes[ip..ip + 8].try_into().unwrap());
+        ip += 8;
+        let ss = u64::from_le_bytes(bytes[ip..ip + 8].try_into().unwrap());
+        ip += 8;
+        let es = u64::from_le_bytes(bytes[ip..ip + 8].try_into().unwrap());
+        ip += 8;
+        let mc = u32::from_le_bytes(bytes[ip..ip + 4].try_into().unwrap());
+        ip += 4;
+        println!("  INDEX[{i}]: offset={off} start_ns={ss} end_ns={es} msg_count={mc}");
+    }
+    hex_block("FOOTER INDEX + TRAILER", &bytes[index_start..]);
+
+    // 用官方读端读回，打印消息（验证结构 + 解压后 message 布局）。
+    println!("--- decoded messages (via SingleFileReader) ---");
+    let mut reader = SingleFileReader::open(path).unwrap();
+    for m in reader.read_all().unwrap() {
+        println!(
+            "MESSAGE: channel={} stamp_ns={} type={} payload_len={}",
+            m.channel,
+            m.stamp.0,
+            m.schema.type_name,
+            m.payload.len()
+        );
+    }
 }
 
 fn read_str(b: &[u8], p: &mut usize) -> String {

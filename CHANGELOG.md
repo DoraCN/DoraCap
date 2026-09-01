@@ -40,3 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 新增 `.dcap` **公开发行格式规范** `docs/doracap-format.md`：字节级布局、读取端独立伪代码、
   写端契约、建图回放行为契约（配帧 / 四元数→旋转矩阵 / seek 重建）、第三方自检清单、跨语言
   golden 样例 `crates/doracap/examples/gen_golden.rs`。
+
+### Changed
+
+- `.dcap` 容器升级为 **v2**：消息按 chunk 分组并整体压缩（默认 deflate/zlib，约 2.5–2.8x），
+  footer 写 chunk 时间索引，读端可按时间 `seek` 只解压目标 chunk 实现流式/有界内存读；
+  header 新增 `compressor` 字段（`0=none`、`1=zstd(保留)`、`2=deflate`）。
+  `SingleFileReader` 兼容读取 v1（无压缩线性格式）旧文件；`info` 对 v2 走 chunk 索引，不整文件载入。

@@ -1,6 +1,6 @@
 //! 存储插件接口：写端与读端。
 
-use crate::message::{ChannelMeta, OwnedMessage, Result, Schema, Timestamp};
+use crate::message::{ChannelMeta, ChunkIndex, Error, OwnedMessage, Result, Schema, Timestamp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SchemaId(pub u16);
@@ -20,8 +20,28 @@ pub trait StorageWriter {
 pub trait StorageReader {
     fn schemas(&self) -> &[Schema];
     fn channels(&self) -> &[ChannelMeta];
-    /// 读出全部消息（最小闭环用；生产可按时间序/索引流式读取）。
-    fn read_all(&mut self) -> Result<Vec<OwnedMessage>>;
+
+    /// 读出全部消息。默认实现按 chunk 索引逐个解压读取；
+    /// 不支持 chunk 的实现（如内存读端）可覆写为直接返回全部。
+    fn read_all(&mut self) -> Result<Vec<OwnedMessage>> {
+        let mut out = Vec::new();
+        let n = self.chunk_index().len();
+        for i in 0..n {
+            out.extend(self.read_chunk_at(i)?);
+        }
+        Ok(out)
+    }
+
+    /// 暴露 chunk 索引，供按时间 seek / 流式 / 有界内存读取。
+    /// 默认返回空（表示该读端不 chunk 化）。
+    fn chunk_index(&self) -> &[ChunkIndex] {
+        &[]
+    }
+
+    /// 解压并读出第 `index` 个 chunk 的全部消息。默认不支持。
+    fn read_chunk_at(&mut self, _index: usize) -> Result<Vec<OwnedMessage>> {
+        Err(Error::msg("chunked read unsupported by this storage reader"))
+    }
 }
 
 pub mod singlefile;

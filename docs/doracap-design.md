@@ -1159,8 +1159,9 @@ rec.finish()?;                                                     // 写 summar
 
 #### ⑥ 压缩 + 大点云性能
 
-- **压缩**：chunk 级；默认 `zstd`(level 3)，可选 `lz4`(快)/`none`；点云 `data` 缓冲不做场内压缩，
-  交给 chunk 层。
+- **压缩**：chunk 级；`compressor` 字段分派（`0=none`、`2=deflate/zlib`、`1=zstd 保留`）。
+  当前参考实现用 **deflate(flate2/miniz_oxide，纯 Rust 无 C)**，比值 ~2.6x；如需 zstd(~2.8x)
+  只需在容器读取/写入分派里加 `1` 分支并引入 zstd 后端。点云 `data` 缓冲不做场内压缩，交给 chunk 层。
 - **大点云**：读按 chunk **流式**、有界内存、可选 `mmap`；写复用点缓冲；`try_next`+sleep 背压；
   基准目标：10 Hz × ~100 万点（几十 MB/s）实时回放 + 压缩（criterion 量化）。
 

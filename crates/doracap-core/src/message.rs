@@ -46,6 +46,19 @@ pub struct ChannelMeta {
     pub schema_id: u16,
 }
 
+/// 一个 chunk 在容器里的定位信息（用于按时间 seek / 流式读）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkIndex {
+    /// chunk 头在文件中的字节偏移。
+    pub offset: u64,
+    /// 该 chunk 内首条消息的调度时间（纳秒）。
+    pub start_stamp: u64,
+    /// 该 chunk 内末条消息的调度时间（纳秒）。
+    pub end_stamp: u64,
+    /// 该 chunk 内的消息条数。
+    pub msg_count: u32,
+}
+
 /// 游标（只读）消息视图。
 #[derive(Clone, Debug)]
 pub struct Message<'a> {

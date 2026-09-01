@@ -6,7 +6,7 @@ pub mod play;
 pub mod record;
 pub mod storage;
 
-pub use message::{ChannelMeta, Message, OwnedMessage, Result, Schema, Timestamp};
+pub use message::{ChannelMeta, ChunkIndex, Message, OwnedMessage, Result, Schema, Timestamp};
 pub use play::{PlayOptions, Player, TryNext};
 pub use record::Recorder;
 pub use storage::{

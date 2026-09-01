@@ -206,31 +206,46 @@ fn info(path: Option<&str>) -> ExitCode {
         eprintln!("usage: doracap info <file.dcap>");
         return ExitCode::FAILURE;
     };
-    let reader = match SingleFileReader::open(path) {
-        Ok(r) => r,
-        Err(e) => return fail(&e.to_string()),
-    };
-    let player = match Player::open(Box::new(reader), PlayOptions::default()) {
-        Ok(p) => p,
-        Err(e) => return fail(&e.to_string()),
-    };
-    println!("file: {path}");
-    println!("messages: {}", player.messages().len());
-    if let Some(first) = player.messages().first() {
-        println!(
-            "range: {:.3} .. {:.3}",
-            first.stamp.to_secs_f64(),
-            player
-                .messages()
-                .last()
-                .map(|m| m.stamp.to_secs_f64())
-                .unwrap_or(0.0)
-        );
-    }
     let mut reader = match SingleFileReader::open(path) {
         Ok(r) => r,
         Err(e) => return fail(&e.to_string()),
     };
+    println!("file: {path}");
+
+    // v2 走 chunk 索引：消息数 / 时间范围来自 footer，不整文件载入。
+    if !reader.chunk_index().is_empty() {
+        let msgs = reader
+            .message_count()
+            .map(|c| c as usize)
+            .unwrap_or_else(|| reader.chunk_index().iter().map(|c| c.msg_count as usize).sum());
+        println!("messages: {msgs}");
+        if let Some((a, b)) = reader.time_range() {
+            println!("range: {:.3} .. {:.3}", a as f64 / 1e9, b as f64 / 1e9);
+        }
+    } else {
+        // v1 fallback：用 Player 全量读（旧文件，无 chunk 索引）。
+        let v1_reader = match SingleFileReader::open(path) {
+            Ok(r) => r,
+            Err(e) => return fail(&e.to_string()),
+        };
+        let player = match Player::open(Box::new(v1_reader), PlayOptions::default()) {
+            Ok(p) => p,
+            Err(e) => return fail(&e.to_string()),
+        };
+        println!("messages: {}", player.messages().len());
+        if let Some(first) = player.messages().first() {
+            println!(
+                "range: {:.3} .. {:.3}",
+                first.stamp.to_secs_f64(),
+                player
+                    .messages()
+                    .last()
+                    .map(|m| m.stamp.to_secs_f64())
+                    .unwrap_or(0.0)
+            );
+        }
+    }
+
     for c in reader.channels() {
         let schema = reader
             .schemas()
@@ -241,10 +256,28 @@ fn info(path: Option<&str>) -> ExitCode {
         println!("topic {:?} : {}", c.name, schema);
     }
     // 场景元信息（自描述）：告诉 viz 世界系与各通道角色。
-    if let Ok(msgs) = reader.read_all()
-        && let Some(m) = msgs.iter().find(|m| m.channel == "scene")
-        && let Ok(meta) = SceneMeta::decode(&m.payload)
-    {
+    // 优先只读首个 chunk（scene 约定为 stamp=0 的第一条）；找不到再全量。
+    let scene_meta: Option<doracap_msgs::SceneMeta> = if reader.chunk_index().is_empty() {
+        reader
+            .read_all()
+            .ok()
+            .and_then(|msgs| msgs.into_iter().find(|m| m.channel == "scene"))
+            .and_then(|m| SceneMeta::decode(&m.payload).ok())
+    } else {
+        let mut found = None;
+        for i in 0..reader.chunk_index().len() {
+            let msgs = match reader.read_chunk_at(i) {
+                Ok(m) => m,
+                Err(_) => break,
+            };
+            if let Some(m) = msgs.into_iter().find(|m| m.channel == "scene") {
+                found = SceneMeta::decode(&m.payload).ok();
+                break;
+            }
+        }
+        found
+    };
+    if let Some(meta) = scene_meta {
         println!("scene: world={}", meta.world_frame);
         for ch in &meta.channels {
             println!(
@@ -529,6 +562,7 @@ fn write_pcd(path: &str, points: &[fast_lio::types::PointType]) -> Result<(), St
     Ok(())
 }
 
+#[cfg_attr(not(feature = "fastlio"), allow(dead_code))]
 fn arg_str(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
@@ -567,7 +601,8 @@ mod tests {
         let bytes = std::fs::read(&path).expect("read .dcap");
         assert_eq!(&bytes[..5], b"#DCAP");
         // 尾部 = DCAP_END(8) + data_offset(8) + message_count(8)
-        assert_eq!(&bytes[bytes.len() - 24..bytes.len() - 16], b"DCAP_END");
+        // v2 footer trailer（末尾 32 字节）：END_MAGIC(8) + data_offset(8) + chunk_count(8) + msg_count(8)
+        assert_eq!(&bytes[bytes.len() - 32..bytes.len() - 24], b"DCAP_END");
         let _ = std::fs::remove_file(&path);
     }
 }

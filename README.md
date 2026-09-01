@@ -31,6 +31,10 @@ record(Imu + PointCloud + PoseStamped) → 单文件 .dcap → play(排序/seek)
   **自洽的建图过程回放源**（原始帧 + 位姿），外部可视化工具无需重跑 SLAM 即可播放/暂停/拖动。
   默认仿真（`--features fastlio`，无需硬件）；
   真机 Livox 用 `--features livox`（需 cmake + C++，且与雷达同网络）。
+  `.dcap` v2 容器为 **chunk 级压缩 + 时间索引 + 流式读**：消息按约 1 秒 / 4MiB 分块并整体
+  deflate 压缩（约 2.5–2.8x），文件末尾写 chunk 索引，读端可按时间 `seek` 只解压目标 chunk，
+  长录制（20 分钟以上）无需把整份文件/全部消息载入内存。第三方读端请遵循
+  [`.dcap` 文件格式规范](docs/doracap-format.md)。
 
 ## 快速开始
 
