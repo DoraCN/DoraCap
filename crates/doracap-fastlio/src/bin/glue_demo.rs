@@ -5,11 +5,11 @@
 //! 4. 与一个全新的 `SimSource`（同参数、确定性）逐条比对（round-trip）。
 //! 5. 可选 `--lio`：跑一次 FAST-LIO `LaserMapping`，证明录制的 bag 能驱动建图。
 
+use doracap_core::{PlayOptions, SingleFileWriter};
+use doracap_fastlio::{BagDataSource, record_source};
 use fast_lio::data_source::{DataSource, SimParams, SimSource};
 use fast_lio::laser_mapping::{LaserMapping, LioConfig};
 use fast_lio::types::{LidarType, SensorData, TimeUnit};
-use doracap_core::{PlayOptions, SingleFileWriter};
-use doracap_fastlio::{BagDataSource, record_source};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

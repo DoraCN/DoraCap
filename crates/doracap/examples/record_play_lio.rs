@@ -157,7 +157,7 @@ mod app {
         let mut source = SimSource::new(&params);
         let writer = SingleFileWriter::open(&out).map_err(|e| e.to_string())?;
         let cfg = lio_cfg(LidarType::Velo16);
-        let (stats, mut rec) = record_loop(writer, &mut source, None, None, &cfg, progress)?;
+        let (stats, mut rec) = record_loop(writer, &mut source, None, None, &cfg, progress, true)?;
 
         println!(
             "[sim] recorded {stats:?} (total={}) -> {out}",
@@ -246,6 +246,7 @@ mod app {
             Some(&stop),
             &cfg,
             progress,
+            map,
         )?;
         if stats.total() == 0 {
             return Err(
@@ -290,6 +291,7 @@ mod app {
         stop: Option<&AtomicBool>,
         cfg: &LioConfig,
         progress: bool,
+        wait_map: bool,
     ) -> Result<(Stats, LioRecorder), String> {
         // 一遍录制：写传感器 + 喂 FAST-LIO + 把位姿写到同一条 `.dcap`。
         let mut rec = LioRecorder::new(Box::new(writer), cfg).map_err(|e| e.to_string())?;
@@ -393,7 +395,14 @@ mod app {
         if tty && progress {
             eprintln!();
         }
-        rec.finish().map_err(|e| e.to_string())?;
+        // 录制与建图解耦：sensor 始终满速落盘，不因建图而丢帧。
+        // - wait_map（真机 `--map` / 仿真）: 等建图线程把已收帧跑完（姿态/地图完整，耗时=建全程）。
+        // - 否则 `finish_now`：立即收尾，弃建图积压，保住全部 sensor 数据。
+        if wait_map {
+            rec.finish().map_err(|e| e.to_string())?;
+        } else {
+            rec.finish_now().map_err(|e| e.to_string())?;
+        }
         Ok((stats, rec))
     }
 

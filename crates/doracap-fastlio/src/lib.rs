@@ -4,14 +4,18 @@
 
 pub mod conv;
 
-use fast_lio::data_source::{DataSource, NonBlocking};
-use fast_lio::laser_mapping::{LaserMapping, LioConfig};
-use fast_lio::types::SensorData;
 use doracap_core::{
     PlayOptions, Player, Recorder, Result, Schema, SingleFileReader, StorageWriter, Timestamp,
     TryNext,
 };
 use doracap_msgs::{ChannelRole, Codec, Header, PoseStamped, SceneMeta};
+use fast_lio::data_source::{DataSource, NonBlocking};
+use fast_lio::laser_mapping::{LaserMapping, LioConfig};
+use fast_lio::types::SensorData;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::{self, JoinHandle};
 
 use crate::conv::sec_nsec;
 
@@ -72,17 +76,32 @@ impl DataSource for BagDataSource {
 
 /// 一边录制、一边建图的录制端。
 ///
-/// `push` 每来一条传感器样本就把 imu/lidar 写进 `.dcap`，并同步喂给 FAST-LIO；
-/// 每处理完一帧点云、`run_once()` 出一个位姿时，就以「该帧时间戳」把位姿作为
-/// `doracap/PoseStamped` 通道写进**同一个** `.dcap`。
+/// `push` 立即把 imu/lidar 写入 `.dcap`（快路径，不再被建图拖慢），再把该帧交给一个
+/// 后台线程跑 FAST-LIO；后台每算出一帧位姿就通过通道回传，由 `push` / `finish_*` 把位姿
+/// 也写进**同一个** `.dcap`。
 ///
 /// 这样产出的 `.dcap` 是**自洽的建图过程回放源**：既有原始传感器帧，又有把每一帧
-/// 摆回世界系的位姿，外部可视化工具无需重跑 SLAM 即可播放/暂停/拖动“看到建图过程”。
+/// 摆回世界系的位姿。录制速率与扫描率解耦：即使 FAST-LIO 比扫描慢，sensor 也不会丢帧，
+/// 姿态通道覆盖“建图线程实际赶到”的部分。
 pub struct LioRecorder {
     rec: Recorder,
-    mapping: LaserMapping,
+    /// 后台建图线程归还的映射器（`finish` / `finish_now` 之后可用）。
+    mapping: Option<LaserMapping>,
+    /// 给后台建图线程投递 sensor 数据的通道发送端。
+    map_tx: Option<Sender<SensorData>>,
+    /// 用于在 `finish_now` 时让后台线程立即停止（丢弃积压）。
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<LaserMapping>>,
+    pose_rx: Receiver<PoseMsg>,
     /// 录制期间每帧位姿（time, position, quaternion[w,x,y,z]），用于直接导出轨迹。
     poses: Vec<(f64, [f64; 3], [f64; 4])>,
+}
+
+/// 后台建图线程产出的位姿。
+struct PoseMsg {
+    time: f64,
+    pos: [f64; 3],
+    quat: [f64; 4],
 }
 
 impl LioRecorder {
@@ -93,75 +112,170 @@ impl LioRecorder {
         rec.add_channel("pose", &schema_of::<PoseStamped>())?;
         // 自描述：建图回放源，声明 world_frame + 各通道角色（含 pose 通道）。
         write_scene(&mut rec, "map", true)?;
+
+        let (map_tx, pose_rx, worker, stop) = spawn_map_worker(LaserMapping::new(cfg));
         Ok(LioRecorder {
             rec,
-            mapping: LaserMapping::new(cfg),
+            mapping: None,
+            map_tx: Some(map_tx),
+            stop,
+            worker: Some(worker),
+            pose_rx,
             poses: Vec::new(),
         })
     }
 
-    /// 写入一条传感器样本；若是点云帧，随后把 FAST-LIO 算出的位姿也写入 `.dcap`。
+    /// 立即把一条传感器样本写入 `.dcap`，并交给后台建图线程。
+    ///
+    /// 写入是快路径（编码 + 落盘），不等待 FAST-LIO；建图在后台线程并行推进，避免
+    /// 算法比扫描慢时拖垮录制、导致 sensor 帧在缓冲区里被丢弃。
     pub fn push(&mut self, data: &SensorData) -> Result<()> {
-        match data {
-            SensorData::Imu(imu) => {
-                let (channel, ts, buf) = conv::encode(data);
-                self.rec.write(channel, Timestamp::from_secs_f64(ts), &buf)?;
-                self.mapping.add_imu(imu);
-            }
-            SensorData::LidarStandard(s) => {
-                let (channel, ts, buf) = conv::encode(data);
-                self.rec.write(channel, Timestamp::from_secs_f64(ts), &buf)?;
-                self.mapping.add_lidar_standard(s);
-                self.emit_pose_if_ready()?;
-            }
-            SensorData::LidarAvia(a) => {
-                let (channel, ts, buf) = conv::encode(data);
-                self.rec.write(channel, Timestamp::from_secs_f64(ts), &buf)?;
-                self.mapping.add_lidar_avia(a);
-                self.emit_pose_if_ready()?;
-            }
+        let (channel, ts, buf) = conv::encode(data);
+        self.rec
+            .write(channel, Timestamp::from_secs_f64(ts), &buf)?;
+        // 后台线程要一份数据拷贝（点云较大，但建图线程才是瓶颈，不会因此拖慢录制）。
+        if let Some(tx) = &self.map_tx {
+            let _ = tx.send(data.clone());
+        }
+        self.drain_poses()
+    }
+
+    /// 把后台线程已产出的所有位姿写入 `.dcap`。
+    fn drain_poses(&mut self) -> Result<()> {
+        while let Ok(p) = self.pose_rx.try_recv() {
+            self.write_pose(p)?;
         }
         Ok(())
     }
 
-    fn emit_pose_if_ready(&mut self) -> Result<()> {
-        if !self.mapping.has_data() {
-            return Ok(());
-        }
-        if let Some(res) = self.mapping.run_once() {
-            let msg = PoseStamped {
-                header: Header {
-                    stamp: sec_nsec(res.time),
-                    frame_id: "map".into(),
-                },
-                position: [res.pos[0], res.pos[1], res.pos[2]],
-                orientation: res.quat,
-            };
-            let mut buf = Vec::new();
-            msg.encode(&mut buf);
-            self.rec.write("pose", Timestamp::from_secs_f64(res.time), &buf)?;
-            self.poses.push((res.time, [res.pos[0], res.pos[1], res.pos[2]], res.quat));
-        }
+    fn write_pose(&mut self, p: PoseMsg) -> Result<()> {
+        let msg = PoseStamped {
+            header: Header {
+                stamp: sec_nsec(p.time),
+                frame_id: "map".into(),
+            },
+            position: p.pos,
+            orientation: p.quat,
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf);
+        self.rec
+            .write("pose", Timestamp::from_secs_f64(p.time), &buf)?;
+        self.poses.push((p.time, p.pos, p.quat));
         Ok(())
     }
 
-    /// 结束录制，写出 `.dcap` 尾部索引。
+    /// 结束录制：停掉后台线程并写出 `.dcap` 尾部索引。
+    ///
+    /// 会**允许后台线程把已收到的全部帧建完**（`drain=true`），使姿态通道最完整；但若
+    /// 建图明显慢于扫描，`finish` 会一直等到它赶完（可能耗时较长）。
     pub fn finish(&mut self) -> Result<()> {
+        self.end_mapping(true)
+    }
+
+    /// 结束录制并**立即停止**：丢弃建图线程尚未处理的积压，保住已写入的 sensor 数据。
+    ///
+    /// `.dcap` 中 sensor 完整，`pose` 通道只覆盖建图线程已完成的部分。用于“想尽快停下”。
+    pub fn finish_now(&mut self) -> Result<()> {
+        self.end_mapping(false)
+    }
+
+    fn end_mapping(&mut self, drain: bool) -> Result<()> {
+        // 关闭给建图线程投递数据的管道，让它处理完（或基于 stop 立即退出）。
+        if let Some(tx) = self.map_tx.take() {
+            drop(tx);
+        }
+        if let Some(handle) = self.worker.take() {
+            if !drain {
+                self.stop.store(true, Ordering::Relaxed);
+            }
+            let mapping = handle
+                .join()
+                .map_err(|_| doracap_core::message::Error::msg("mapping worker panicked"))?;
+            self.mapping = Some(mapping);
+        }
+        self.drain_poses()?;
         self.rec.finish()
     }
 
-    /// 访问内部建图器（用于导出地图点等）。
+    /// 访问内部建图器（用于导出地图点等）。须在 `finish` / `finish_now` 之后调用。
     pub fn mapping(&self) -> &LaserMapping {
-        &self.mapping
+        self.mapping
+            .as_ref()
+            .expect("mapping is available after finish()/finish_now()")
     }
 
     pub fn mapping_mut(&mut self) -> &mut LaserMapping {
-        &mut self.mapping
+        self.mapping
+            .as_mut()
+            .expect("mapping is available after finish()/finish_now()")
     }
 
     /// 录制期间产生的每帧位姿，可直接写成轨迹文件（无需重新回放）。
     pub fn poses(&self) -> &[(f64, [f64; 3], [f64; 4])] {
         &self.poses
+    }
+}
+
+impl Drop for LioRecorder {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        self.map_tx.take();
+        if let Some(h) = self.worker.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// 启动后台建图线程。
+fn spawn_map_worker(
+    mut mapping: LaserMapping,
+) -> (
+    Sender<SensorData>,
+    Receiver<PoseMsg>,
+    JoinHandle<LaserMapping>,
+    Arc<AtomicBool>,
+) {
+    let (tx, rx) = mpsc::channel::<SensorData>();
+    let (pose_tx, pose_rx) = mpsc::channel::<PoseMsg>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
+        while !stop2.load(Ordering::Relaxed) {
+            match rx.recv() {
+                Ok(data) => map_one(&mut mapping, data, &pose_tx),
+                Err(_) => break,
+            }
+        }
+        mapping
+    });
+    (tx, pose_rx, handle, stop)
+}
+
+fn map_one(mapping: &mut LaserMapping, data: SensorData, pose_tx: &Sender<PoseMsg>) {
+    match data {
+        SensorData::Imu(imu) => mapping.add_imu(&imu),
+        SensorData::LidarStandard(s) => {
+            mapping.add_lidar_standard(&s);
+            maybe_emit_pose(mapping, pose_tx);
+        }
+        SensorData::LidarAvia(a) => {
+            mapping.add_lidar_avia(&a);
+            maybe_emit_pose(mapping, pose_tx);
+        }
+    }
+}
+
+fn maybe_emit_pose(mapping: &mut LaserMapping, pose_tx: &Sender<PoseMsg>) {
+    if !mapping.has_data() {
+        return;
+    }
+    if let Some(res) = mapping.run_once() {
+        let _ = pose_tx.send(PoseMsg {
+            time: res.time,
+            pos: [res.pos[0], res.pos[1], res.pos[2]],
+            quat: res.quat,
+        });
     }
 }
 
@@ -218,8 +332,7 @@ mod tests {
 
     #[test]
     fn lio_recorder_bakes_pose_channel() {
-        let path =
-            std::env::temp_dir().join(format!("doracap_lio_{}.dcap", std::process::id()));
+        let path = std::env::temp_dir().join(format!("doracap_lio_{}.dcap", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let params = SimParams {

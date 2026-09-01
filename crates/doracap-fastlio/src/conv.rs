@@ -1,9 +1,9 @@
 //! `fast_lio::types::SensorData` 与 `doracap_msgs` 规范消息的互转。
 //! 点云统一映射为 doracap 的 `PointCloud`（用 `fields` 描述，保留逐点时间/ring/offset_time）。
 
-use fast_lio::types::{AviaMsg, AviaPointMsg, ImuRaw, SensorData, StandardMsg, StdPointMsg};
 use doracap_core::OwnedMessage;
 use doracap_msgs::{Codec, Header, Imu, PointCloud, PointField, Time};
+use fast_lio::types::{AviaMsg, AviaPointMsg, ImuRaw, SensorData, StandardMsg, StdPointMsg};
 
 // ---------- 时间 ----------
 
