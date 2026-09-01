@@ -40,10 +40,15 @@
 //!   cargo run --release -p doracap --example record_play_lio --features livox \
 //!     -- --live --config mid360_config.json --scan-hz 10 --out live.dcap --map \
 //!        --pcd map_live.pcd --pos pos_live.txt
+//!
+//! 录制中每隔 0.5s 在 stderr 打印一行实时状态（wall / data span / 实时占比 /
+//! imu·lidar·pose 速率 / 当前位姿 / idle），数据源停滞(>2s)会打出告警。
+//! 加 `--quiet` 可关闭实时状态输出。
 //! ```
 
 #[cfg(feature = "fastlio")]
 mod app {
+    use std::io::IsTerminal;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
@@ -74,6 +79,22 @@ mod app {
                 SensorData::LidarStandard(_) | SensorData::LidarAvia(_) => self.lidar += 1,
             }
         }
+    }
+
+    /// 取一条传感器样本的时间戳（秒）作为“录制时钟”。
+    fn msg_time(d: &SensorData) -> f64 {
+        match d {
+            SensorData::Imu(i) => i.stamp,
+            SensorData::LidarStandard(s) => s.stamp,
+            SensorData::LidarAvia(a) => a.stamp,
+        }
+    }
+
+    /// 把秒数格式化为 `m:ss.s`。
+    fn fmt_secs(s: f64) -> String {
+        let m = (s / 60.0).floor() as i64;
+        let sec = s - m as f64 * 60.0;
+        format!("{m}:{sec:04.1}")
     }
 
     pub fn run() -> Result<(), String> {
@@ -119,6 +140,7 @@ mod app {
         let pcd = arg(args, "--pcd").unwrap_or_else(|| "/tmp/map_sim.pcd".into());
         let pos = arg(args, "--pos").unwrap_or_else(|| "/tmp/pos_sim.txt".into());
         let duration = argf(args, "--duration", 5.0);
+        let progress = !args.iter().any(|a| a == "--quiet");
 
         let params = SimParams {
             imu_hz: 200.0,
@@ -135,9 +157,12 @@ mod app {
         let mut source = SimSource::new(&params);
         let writer = SingleFileWriter::open(&out).map_err(|e| e.to_string())?;
         let cfg = lio_cfg(LidarType::Velo16);
-        let (stats, mut rec) = record_loop(writer, &mut source, None, None, &cfg)?;
+        let (stats, mut rec) = record_loop(writer, &mut source, None, None, &cfg, progress)?;
 
-        println!("[sim] recorded {stats:?} (total={}) -> {out}", stats.total());
+        println!(
+            "[sim] recorded {stats:?} (total={}) -> {out}",
+            stats.total()
+        );
         let frames = export_map(&mut rec, &pcd, &pos)?;
         println!("[mapping] frames={frames} -> pcd={pcd}, pos={pos}");
         Ok(())
@@ -178,14 +203,15 @@ mod app {
 
     #[cfg(feature = "livox")]
     fn run_live(args: &[String]) -> Result<(), String> {
+        use fast_lio_driver::{DriverParams, open};
         use std::sync::Arc;
-        use fast_lio_driver::{open, DriverParams};
 
         let config = arg(args, "--config").unwrap_or_else(|| "mid360_config.json".into());
         let out = arg(args, "--out").unwrap_or_else(|| "/tmp/live.dcap".into());
         let pcd = arg(args, "--pcd").unwrap_or_else(|| "/tmp/map_live.pcd".into());
         let pos = arg(args, "--pos").unwrap_or_else(|| "/tmp/pos_live.txt".into());
         let map = args.iter().any(|a| a == "--map");
+        let progress = !args.iter().any(|a| a == "--quiet");
         // 0 = 不限时长，直到手动 Ctrl+C。
         let duration = argf(args, "--duration", 0.0);
         let scan_hz = argf(args, "--scan-hz", 10.0);
@@ -213,19 +239,33 @@ mod app {
 
         let writer = SingleFileWriter::open(&out).map_err(|e| e.to_string())?;
         let cfg = lio_cfg(LidarType::Avia);
-        let (stats, mut rec) =
-            record_loop(writer, source.as_mut(), deadline, Some(&stop), &cfg)?;
+        let (stats, mut rec) = record_loop(
+            writer,
+            source.as_mut(),
+            deadline,
+            Some(&stop),
+            &cfg,
+            progress,
+        )?;
         if stats.total() == 0 {
-            return Err("recorded 0 samples — check that the LiDAR is reachable and the config is valid".into());
+            return Err(
+                "recorded 0 samples — check that the LiDAR is reachable and the config is valid"
+                    .into(),
+            );
         }
         if stop.load(Ordering::Relaxed) {
             println!("[live] Ctrl+C received, finalized {out}");
         }
 
-        println!("[live] recorded {stats:?} (total={}) -> {out}", stats.total());
+        println!(
+            "[live] recorded {stats:?} (total={}) -> {out}",
+            stats.total()
+        );
         // Ctrl+C == 停止并保存，立即退出（不进入耗时的重放建图）。
         if !map {
-            println!("[hint] 需要同时导出 map.pcd/pos.txt: 加 --map, 或看内容: `doracap play {out} --json`");
+            println!(
+                "[hint] 需要同时导出 map.pcd/pos.txt: 加 --map, 或看内容: `doracap play {out} --json`"
+            );
             return Ok(());
         }
 
@@ -249,10 +289,21 @@ mod app {
         deadline: Option<Instant>,
         stop: Option<&AtomicBool>,
         cfg: &LioConfig,
+        progress: bool,
     ) -> Result<(Stats, LioRecorder), String> {
         // 一遍录制：写传感器 + 喂 FAST-LIO + 把位姿写到同一条 `.dcap`。
         let mut rec = LioRecorder::new(Box::new(writer), cfg).map_err(|e| e.to_string())?;
         let mut stats = Stats::new();
+        let started = Instant::now();
+        let mut first_ts: Option<f64> = None;
+        let mut last_ts: Option<f64> = None;
+        let mut last_ui = Instant::now();
+        let mut last_msg = Instant::now();
+        let mut ui_imu = 0usize;
+        let mut ui_lidar = 0usize;
+        let mut last_pose = 0usize;
+        let mut idle_warned = false;
+        let tty = std::io::stderr().is_terminal();
 
         loop {
             if let Some(d) = deadline
@@ -268,11 +319,79 @@ mod app {
             match source.try_next() {
                 Ok(Some(data)) => {
                     stats.bump_sensor(&data);
+                    last_msg = Instant::now();
+                    let ts = msg_time(&data);
+                    first_ts.get_or_insert(ts);
+                    last_ts = Some(ts);
+                    match &data {
+                        SensorData::Imu(_) => ui_imu += 1,
+                        SensorData::LidarStandard(_) | SensorData::LidarAvia(_) => ui_lidar += 1,
+                    }
                     rec.push(&data).map_err(|e| e.to_string())?;
                 }
                 Ok(None) => break,
                 Err(NonBlocking) => std::thread::sleep(Duration::from_millis(5)),
             }
+
+            if !progress {
+                continue;
+            }
+            let now = Instant::now();
+            let since_ui = now.duration_since(last_ui).as_secs_f64();
+            if since_ui < 0.5 {
+                continue;
+            }
+
+            let wall = now.duration_since(started).as_secs_f64();
+            let span = match (first_ts, last_ts) {
+                (Some(a), Some(b)) => (b - a).max(0.0),
+                _ => 0.0,
+            };
+            let rt = if wall > 0.0 { span / wall * 100.0 } else { 0.0 };
+            let imu_hz = ui_imu as f64 / since_ui;
+            let lidar_hz = ui_lidar as f64 / since_ui;
+            let pose_n = rec.poses().len();
+            let pose_hz = (pose_n - last_pose) as f64 / since_ui;
+            let idle = now.duration_since(last_msg).as_secs_f64();
+            let pos_s = match rec.poses().last() {
+                Some(p) => format!("({:.3},{:.3},{:.3})", p.1[0], p.1[1], p.1[2]),
+                None => "(n/a)".into(),
+            };
+
+            let line = format!(
+                "[REC] wall {} | data {} ({:>3.0}% rt) | imu {} ({:>5.1}/s) lidar {} ({:>4.1}/s) | pose {} ({:>4.1}/s) | pos {} | idle {:.1}s",
+                fmt_secs(wall),
+                fmt_secs(span),
+                rt,
+                stats.imu,
+                imu_hz,
+                stats.lidar,
+                lidar_hz,
+                pose_n,
+                pose_hz,
+                pos_s,
+                idle
+            );
+            if tty {
+                eprint!("\r\x1b[2K{line}");
+            } else {
+                eprintln!("{line}");
+            }
+            if idle > 2.0 && !idle_warned {
+                idle_warned = true;
+                eprintln!(
+                    "\n[REC] WARN: no new sensor data for {idle:.1}s (data source likely stalled/stopped)"
+                );
+            } else if idle <= 2.0 {
+                idle_warned = false;
+            }
+            ui_imu = 0;
+            ui_lidar = 0;
+            last_pose = pose_n;
+            last_ui = now;
+        }
+        if tty && progress {
+            eprintln!();
         }
         rec.finish().map_err(|e| e.to_string())?;
         Ok((stats, rec))
@@ -316,8 +435,7 @@ mod app {
         use std::io::Write;
         let mut f = std::fs::File::create(path).map_err(|e| format!("create {path}: {e}"))?;
         let header = "# time qw qx qy qz pos_x pos_y pos_z\n";
-        f.write_all(header.as_bytes())
-            .map_err(|e| e.to_string())?;
+        f.write_all(header.as_bytes()).map_err(|e| e.to_string())?;
         for (t, pos, quat) in rows {
             let line = format!(
                 "{t:.6} {:.8} {:.8} {:.8} {:.8} {:.6} {:.6} {:.6}\n",
@@ -338,7 +456,9 @@ mod app {
     }
 
     fn argf(args: &[String], name: &str, default: f64) -> f64 {
-        arg(args, name).and_then(|s| s.parse().ok()).unwrap_or(default)
+        arg(args, name)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default)
     }
 
     /// 为指定的 LiDAR 类型给出 FAST-LIO 建图配置（Livox 走 Avia，仿真走 Velo16）。
