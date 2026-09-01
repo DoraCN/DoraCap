@@ -18,8 +18,9 @@ record(Imu + PointCloud + PoseStamped) → 单文件 .dcap → play(排序/seek)
 
 - `doracap-core`：核心值类型（`Timestamp`/`Schema`/`Message`）、存储 trait
   （`StorageWriter`/`StorageReader`）、单文件 `.dcap` 后端（`SingleFileWriter`/`SingleFileReader`）、
-  `Recorder` / `Player`。`Player` 打开时**按时间排序**，支持 `rate`/`loop`/`now`/`seek`/`seek_ratio`
-  /`set_rate`/`duration`（对外提供播放/暂停/拖动所需的时间轴 API）。
+  `Recorder` / `Player`。`Player` 对 v2 按 **chunk 惰性流式读**（解压目标 chunk、内存有界、按时间
+  `seek`），对 v1 回退为全量排序；支持 `rate`/`loop`/`now`/`seek`/`seek_ratio`/`set_rate`/`duration`
+  （对外提供播放/暂停/拖动所需的时间轴 API）。
 - `doracap-msgs`：规范消息 `Header`/`Time`/`PointCloud`/`Imu`/`PoseStamped` + `rbag1` 紧凑编码
   （含 golden 与 round-trip 测试）。
 - `doracap`：命令行（`selftest` / `info` / `play`）。`play` 支持 `--rate`/`--loop`，可输出

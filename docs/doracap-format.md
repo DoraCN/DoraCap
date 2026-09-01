@@ -399,6 +399,9 @@ n_channels  : u32
 - `loop`：到末尾回绕，并**重算基准**使 `sim` 单调，保证首尾 `stamp` 不出现倒退。
 - `seek(ts)`：把播放头定位到**首个 `stamp >= ts` 的消息**，并重新锚定「现在 = 目标时刻」。
 - `pause` / 单步：等价于把 `rate` 置 0 或不推进，由调用方轮询。
+- **参考实现（v2）**：`doracap-core::Player` 按 chunk 惰性流式读取——`seek` 用 chunk 索引定位
+  目标 chunk，只解压它；跨 chunk 顺序按写入/时间序（写端保证 chunk 内稳定排序、chunk 间近单调），
+  不做全局重排。v1（无 chunk 索引）才回退为全量 `read_all` + `stamp` 稳定排序。
 
 ### 13.2 跨通道合并
 

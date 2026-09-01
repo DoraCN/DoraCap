@@ -47,3 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   footer 写 chunk 时间索引，读端可按时间 `seek` 只解压目标 chunk 实现流式/有界内存读；
   header 新增 `compressor` 字段（`0=none`、`1=zstd(保留)`、`2=deflate`）。
   `SingleFileReader` 兼容读取 v1（无压缩线性格式）旧文件；`info` 对 v2 走 chunk 索引，不整文件载入。
+- `Player` 改为 **v2 惰性流式读**：对带 chunk 索引（v2）的读端，`next_message`/`try_next`/
+  `seek` 按需解压目标 chunk，内存有界；对 v1（无索引）仍回退为全量 `read_all` + 稳定排序。
+  新增 `Player::message_count()`；`Player::messages()` 改为 `&mut self`（调用即物化全部消息，
+  `doracap play` 不再调用它，避免大文件全量载入）。

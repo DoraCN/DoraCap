@@ -129,7 +129,7 @@ fn play(args: &[String]) -> ExitCode {
     }
     eprintln!(
         "play: {} msgs, range {:.3}..{:.3}s, rate={rate}",
-        player.messages().len(),
+        player.message_count(),
         player.first_stamp().map(|t| t.to_secs_f64()).unwrap_or(0.0),
         player.last_stamp().map(|t| t.to_secs_f64()).unwrap_or(0.0)
     );
@@ -232,17 +232,9 @@ fn info(path: Option<&str>) -> ExitCode {
             Ok(p) => p,
             Err(e) => return fail(&e.to_string()),
         };
-        println!("messages: {}", player.messages().len());
-        if let Some(first) = player.messages().first() {
-            println!(
-                "range: {:.3} .. {:.3}",
-                first.stamp.to_secs_f64(),
-                player
-                    .messages()
-                    .last()
-                    .map(|m| m.stamp.to_secs_f64())
-                    .unwrap_or(0.0)
-            );
+        println!("messages: {}", player.message_count());
+        if let (Some(a), Some(b)) = (player.first_stamp(), player.last_stamp()) {
+            println!("range: {:.3} .. {:.3}", a.to_secs_f64(), b.to_secs_f64());
         }
     }
 
