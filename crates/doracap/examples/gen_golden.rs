@@ -2,7 +2,9 @@
 //! 并逐区段打印其字节，供跨语言实现对拍（见 docs/doracap-format.md §13）。
 
 use doracap_core::{Recorder, Schema, SingleFileWriter, Timestamp};
-use doracap_msgs::{ChannelRole, Codec, Header, Imu, PointCloud, PointField, PoseStamped, SceneMeta, Time};
+use doracap_msgs::{
+    ChannelRole, Codec, Header, Imu, PointCloud, PointField, PoseStamped, SceneMeta, Time,
+};
 
 fn schema_of<T: Codec>() -> Schema {
     Schema {
@@ -27,16 +29,30 @@ fn main() {
     // 因此必须先注册**所有**通道，再写任何一条消息。
     rec.add_channel("scene", &schema_of::<SceneMeta>()).unwrap();
     rec.add_channel("imu", &schema_of::<Imu>()).unwrap();
-    rec.add_channel("lidar", &schema_of::<PointCloud>()).unwrap();
-    rec.add_channel("pose", &schema_of::<PoseStamped>()).unwrap();
+    rec.add_channel("lidar", &schema_of::<PointCloud>())
+        .unwrap();
+    rec.add_channel("pose", &schema_of::<PoseStamped>())
+        .unwrap();
 
     // SceneMeta（自描述）
     let scene = SceneMeta {
         world_frame: "map".into(),
         channels: vec![
-            ChannelRole { name: "imu".into(), role: "imu".into(), frame_id: "imu".into() },
-            ChannelRole { name: "lidar".into(), role: "lidar".into(), frame_id: "lidar".into() },
-            ChannelRole { name: "pose".into(), role: "pose".into(), frame_id: "map".into() },
+            ChannelRole {
+                name: "imu".into(),
+                role: "imu".into(),
+                frame_id: "imu".into(),
+            },
+            ChannelRole {
+                name: "lidar".into(),
+                role: "lidar".into(),
+                frame_id: "lidar".into(),
+            },
+            ChannelRole {
+                name: "pose".into(),
+                role: "pose".into(),
+                frame_id: "map".into(),
+            },
         ],
     };
     let mut b = Vec::new();
@@ -45,7 +61,10 @@ fn main() {
 
     // Imu
     let imu = Imu {
-        header: Header { stamp: ts(0, 0), frame_id: "imu".into() },
+        header: Header {
+            stamp: ts(0, 0),
+            frame_id: "imu".into(),
+        },
         orientation: [0.0, 0.0, 0.0, 1.0],
         orientation_cov: [0.0; 9],
         ang_vel: [0.1, 0.2, 0.3],
@@ -55,17 +74,36 @@ fn main() {
     };
     let mut b = Vec::new();
     imu.encode(&mut b);
-    rec.write("imu", Timestamp::from_sec_nsec(1, 0), &b).unwrap();
+    rec.write("imu", Timestamp::from_sec_nsec(1, 0), &b)
+        .unwrap();
 
     // PointCloud（1 点）
     let cloud = PointCloud {
-        header: Header { stamp: ts(2, 0), frame_id: "lidar".into() },
+        header: Header {
+            stamp: ts(2, 0),
+            frame_id: "lidar".into(),
+        },
         height: 1,
         width: 1,
         fields: vec![
-            PointField { name: "x".into(), offset: 0, datatype: 7, count: 1 },
-            PointField { name: "y".into(), offset: 4, datatype: 7, count: 1 },
-            PointField { name: "z".into(), offset: 8, datatype: 7, count: 1 },
+            PointField {
+                name: "x".into(),
+                offset: 0,
+                datatype: 7,
+                count: 1,
+            },
+            PointField {
+                name: "y".into(),
+                offset: 4,
+                datatype: 7,
+                count: 1,
+            },
+            PointField {
+                name: "z".into(),
+                offset: 8,
+                datatype: 7,
+                count: 1,
+            },
         ],
         is_bigendian: false,
         point_step: 12,
@@ -78,17 +116,22 @@ fn main() {
     };
     let mut b = Vec::new();
     cloud.encode(&mut b);
-    rec.write("lidar", Timestamp::from_sec_nsec(2, 0), &b).unwrap();
+    rec.write("lidar", Timestamp::from_sec_nsec(2, 0), &b)
+        .unwrap();
 
     // PoseStamped
     let pose = PoseStamped {
-        header: Header { stamp: ts(2, 0), frame_id: "map".into() },
+        header: Header {
+            stamp: ts(2, 0),
+            frame_id: "map".into(),
+        },
         position: [1.0, 2.0, 3.0],
         orientation: [1.0, 0.0, 0.0, 0.0],
     };
     let mut b = Vec::new();
     pose.encode(&mut b);
-    rec.write("pose", Timestamp::from_sec_nsec(2, 0), &b).unwrap();
+    rec.write("pose", Timestamp::from_sec_nsec(2, 0), &b)
+        .unwrap();
     rec.finish().unwrap();
 
     // 读回并逐区段打印
@@ -180,5 +223,8 @@ fn hex_block(label: &str, b: &[u8]) {
 }
 
 fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")
+    b.iter()
+        .map(|x| format!("{x:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
