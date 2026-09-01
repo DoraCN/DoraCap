@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-01
+
 ### Added
 
 - P0 最小闭环：`doracap-core` 核心类型、存储 trait、单文件 `.dcap` 后端，`Recorder`/`Player`。

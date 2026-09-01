@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "doracap"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ctrlc",
  "doracap-core",
@@ -162,14 +162,14 @@ dependencies = [
 
 [[package]]
 name = "doracap-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
 ]
 
 [[package]]
 name = "doracap-fastlio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "doracap-core",
  "doracap-msgs",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "doracap-msgs"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "either"
