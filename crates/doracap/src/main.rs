@@ -1,4 +1,4 @@
-//! doracap 命令行（最小闭环）：record / play / info / selftest。
+//! doracap 命令行（最小闭环）：record / play / info / selftest / bake。
 //! `selftest` 验证：record(Imu+PointCloud) -> 单文件 .dcap -> play -> decode -> round-trip。
 
 use std::io::Write;
@@ -23,8 +23,11 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         Some("play") => play(&args),
+        Some("bake") => bake(&args),
         _ => {
-            eprintln!("usage: doracap (selftest|info <file>|record|play)");
+            eprintln!(
+                "usage: doracap (selftest|info <file>|record|play|bake <in.dcap> <out.dcap>)"
+            );
             ExitCode::FAILURE
         }
     }
@@ -347,6 +350,190 @@ fn roundtrip(path: &std::path::Path) -> Result<(), String> {
         return Err("Imu round-trip mismatch".into());
     }
     Ok(())
+}
+
+#[cfg(feature = "fastlio")]
+fn bake(args: &[String]) -> ExitCode {
+    use std::io::IsTerminal;
+    use std::time::Instant;
+
+    use doracap_fastlio::{BagDataSource, LioRecorder};
+    use fast_lio::data_source::DataSource;
+    use fast_lio::types::LidarType;
+
+    let Some(inp) = args.get(2).cloned() else {
+        return fail(
+            "usage: doracap bake <in.dcap> <out.dcap> [--lidar avia|velo16|ouster|marsim] [--pcd <file>] [--pos <file>]",
+        );
+    };
+    let Some(out) = args.get(3).cloned() else {
+        return fail(
+            "usage: doracap bake <in.dcap> <out.dcap> [--lidar avia|velo16|ouster|marsim] [--pcd <file>] [--pos <file>]",
+        );
+    };
+
+    let lidar_type = match arg_str(args, "--lidar").as_deref() {
+        Some("velo16") => LidarType::Velo16,
+        Some("ouster") => LidarType::Oust64,
+        Some("marsim") => LidarType::Marsim,
+        _ => LidarType::Avia,
+    };
+    let pcd = arg_str(args, "--pcd");
+    let pos = arg_str(args, "--pos");
+
+    // 回放输入 .dcap（仅 imu/lidar，跳过已有 pose/scene），喂给 LioRecorder。
+    let mut source: Box<dyn DataSource> = match BagDataSource::open(&inp, PlayOptions::default()) {
+        Ok(s) => Box::new(s),
+        Err(e) => return fail(&e.to_string()),
+    };
+    let writer = match SingleFileWriter::open(&out) {
+        Ok(w) => w,
+        Err(e) => return fail(&e.to_string()),
+    };
+    let cfg = bake_lio_cfg(lidar_type);
+    let mut rec = match LioRecorder::new(Box::new(writer), &cfg) {
+        Ok(r) => r,
+        Err(e) => return fail(&e.to_string()),
+    };
+
+    let tty = std::io::stderr().is_terminal();
+    eprintln!("[bake] replaying {inp} ...");
+    let started = Instant::now();
+    let mut n = 0usize;
+    let mut last_ui = Instant::now();
+    while let Some(data) = source.next() {
+        if let Err(e) = rec.push(&data) {
+            return fail(&e.to_string());
+        }
+        n += 1;
+        let now = Instant::now();
+        if now.duration_since(last_ui).as_secs_f64() >= 0.5 {
+            let line = format!(
+                "[bake] replayed {n} sensor msgs, {} poses ...",
+                rec.poses().len()
+            );
+            if tty {
+                eprint!("\r\x1b[2K{line}");
+            } else {
+                eprintln!("{line}");
+            }
+            last_ui = now;
+        }
+    }
+    if tty {
+        eprintln!(
+            "\r\x1b[2K[bake] replayed {n} sensor msgs; baking poses (may take a while for long clips) ..."
+        );
+    } else {
+        eprintln!(
+            "[bake] replayed {n} sensor msgs; baking poses (may take a while for long clips) ..."
+        );
+    }
+    // finish() 会等 FAST-LIO 把已回放的全部帧建完，从而 pose 通道完整。
+    if let Err(e) = rec.finish() {
+        return fail(&e.to_string());
+    }
+    if tty {
+        eprintln!();
+    }
+
+    let poses = rec.poses().len();
+    println!(
+        "[bake] {n} sensor msgs -> {poses} poses in {:.1}s; wrote {out}",
+        started.elapsed().as_secs_f64()
+    );
+
+    if let Some(p) = &pcd {
+        if let Err(e) = export_pcd(p, &mut rec) {
+            return fail(&e.to_string());
+        }
+    }
+    if let Some(p) = &pos {
+        if let Err(e) = export_pos(p, rec.poses()) {
+            return fail(&e.to_string());
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(not(feature = "fastlio"))]
+fn bake(_args: &[String]) -> ExitCode {
+    eprintln!(
+        "bake requires the `fastlio` feature: cargo run --features fastlio -p doracap -- bake <in.dcap> <out.dcap>"
+    );
+    ExitCode::FAILURE
+}
+
+#[cfg(feature = "fastlio")]
+fn bake_lio_cfg(lidar_type: fast_lio::types::LidarType) -> fast_lio::laser_mapping::LioConfig {
+    // 与 record_play_lio 保持一致：Avia 固定 n_scans=6，避免 fast-lio preprocess 越界。
+    let n_scans = match lidar_type {
+        fast_lio::types::LidarType::Avia => 6,
+        _ => 16,
+    };
+    fast_lio::laser_mapping::LioConfig {
+        lidar_type,
+        feature_extract_enable: false,
+        point_filter_num: 2,
+        n_scans,
+        scan_rate: 10,
+        timestamp_unit: fast_lio::types::TimeUnit::Us,
+        filter_size_surf: 0.5,
+        filter_size_map: 0.5,
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "fastlio")]
+fn export_pcd(path: &str, rec: &mut doracap_fastlio::LioRecorder) -> Result<(), String> {
+    rec.mapping_mut().ikdtree.flatten_to_storage();
+    write_pcd(path, &rec.mapping().ikdtree.pcl_storage)
+}
+
+#[cfg(feature = "fastlio")]
+fn export_pos(path: &str, rows: &[(f64, [f64; 3], [f64; 4])]) -> Result<(), String> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path).map_err(|e| format!("create {path}: {e}"))?;
+    f.write_all(b"# time qw qx qy qz pos_x pos_y pos_z\n")
+        .map_err(|e| e.to_string())?;
+    for (t, pos, quat) in rows {
+        let line = format!(
+            "{t:.6} {:.8} {:.8} {:.8} {:.8} {:.6} {:.6} {:.6}\n",
+            quat[0], quat[1], quat[2], quat[3], pos[0], pos[1], pos[2]
+        );
+        f.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "fastlio")]
+fn write_pcd(path: &str, points: &[fast_lio::types::PointType]) -> Result<(), String> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path).map_err(|e| format!("create {path}: {e}"))?;
+    let mut w =
+        |s: String| -> Result<(), String> { f.write_all(s.as_bytes()).map_err(|e| e.to_string()) };
+    w("# .PCD v0.7 - Point Cloud Data file format\n".into())?;
+    w("VERSION 0.7\n".into())?;
+    w("FIELDS x y z intensity\n".into())?;
+    w("SIZE 4 4 4 4\n".into())?;
+    w("TYPE F F F F\n".into())?;
+    w("COUNT 1 1 1 1\n".into())?;
+    w(format!("WIDTH {}\n", points.len()))?;
+    w("HEIGHT 1\n".into())?;
+    w("VIEWPOINT 0 0 0 1 0 0 0\n".into())?;
+    w(format!("POINTS {}\n", points.len()))?;
+    w("DATA ascii\n".into())?;
+    for p in points {
+        w(format!("{} {} {} {}\n", p.x, p.y, p.z, p.intensity))?;
+    }
+    Ok(())
+}
+
+fn arg_str(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 fn fail(msg: &str) -> ExitCode {
