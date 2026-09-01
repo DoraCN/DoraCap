@@ -3,14 +3,23 @@ name = "doracap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "DoraCap command line: record sensor streams into a single self-describing .dcap file and replay it with playback controls or pipe to external visualizers."
+readme = "README.md"
+keywords = ["recording", "replay", "rosbag", "cli", "sensor"]
+categories = ["command-line-utilities", "data-structures"]
 
 [[bin]]
 name = "doracap"
 path = "src/main.rs"
 
 [dependencies]
-doracap-core = { path = "../doracap-core" }
-doracap-msgs = { path = "../doracap-msgs" }
+doracap-core = { path = "../doracap-core", version = "0.1.0" }
+doracap-msgs = { path = "../doracap-msgs", version = "0.1.0" }
+
+[[example]]
+name = "record_play_lio"
+required-features = ["fastlio"]
 
 # 示例（example）使用的特性；默认关闭，避免普通构建/测试被拖入 FAST-LIO 与 Livox SDK。
 #   fastlio : 仿真数据源 -> .dcap -> FAST-LIO 建图（纯 Rust，无需硬件/CMake）
@@ -21,6 +30,7 @@ fastlio = ["dep:doracap-fastlio", "dep:fast-lio"]
 livox = ["fastlio", "dep:fast-lio-driver", "dep:ctrlc", "dep:livox-sdk2"]
 
 [dependencies.doracap-fastlio]
+version = "0.1.0"
 path = "../doracap-fastlio"
 optional = true
 

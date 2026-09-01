@@ -3,9 +3,13 @@ name = "doracap-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Core types and storage backends for the DoraCap recording/replay library: timestamps, schemas, messages, the single-file .dcap backend, and the Recorder/Player."
+readme = "README.md"
+keywords = ["recording", "replay", "sensor-data", "time-series", "data-file"]
+categories = ["data-structures", "development-tools", "encoding"]
 
 [lib]
 name = "doracap_core"
 
 [dependencies]
-

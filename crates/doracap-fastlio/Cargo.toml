@@ -3,13 +3,18 @@ name = "doracap-fastlio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Bridges FAST-LIO sensor streams to DoraCap: record any DataSource into a .dcap and replay it back as a FAST-LIO DataSource."
+readme = "README.md"
+keywords = ["fast-lio", "slam", "lidar", "mapping", "bag"]
+categories = ["science::robotics", "development-tools"]
 
 [lib]
 name = "doracap_fastlio"
 
 [dependencies]
-doracap-core = { path = "../doracap-core" }
-doracap-msgs = { path = "../doracap-msgs" }
+doracap-core = { path = "../doracap-core", version = "0.1.0" }
+doracap-msgs = { path = "../doracap-msgs", version = "0.1.0" }
 fast-lio = "0.1.0"
 
 [[bin]]

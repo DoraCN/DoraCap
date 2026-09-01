@@ -3,9 +3,13 @@ name = "doracap-msgs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Typed sensor messages (IMU, point cloud, pose, scene meta) and the compact 'rbag1' codec used by the .dcap format."
+readme = "README.md"
+keywords = ["rosbag", "codec", "serialization", "sensor", "pointcloud"]
+categories = ["encoding", "data-structures"]
 
 [lib]
 name = "doracap_msgs"
 
 [dependencies]
-
